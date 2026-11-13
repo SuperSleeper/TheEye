@@ -22,6 +22,7 @@ log = logging.getLogger("theeye.detector")
 
 VEHICLES = {"car", "truck", "bus", "motorcycle"}
 TRACK_TTL = 3.0          # seconds unseen before a track is finalized
+PLATE_RETRY_MAX_S = 30.0          # slowest retry for a vehicle whose plate hasn't read confidently
 IOU_MATCH = 0.3
 
 
@@ -43,6 +44,7 @@ class Track:
     plate: Optional[str] = None
     plate_conf: float = 0.0
     last_plate_try: float = 0.0
+    plate_tries: int = 0
     db_id: Optional[int] = None
     hits: int = 0
 
@@ -119,9 +121,20 @@ class Detector:
         if self.cfg.plates:
             try:
                 from fast_alpr import ALPR
+                import onnxruntime as ort
                 cpu = ["CPUExecutionProvider"]          # plate models are tiny; CPU avoids CUDA-version clashes
+
+                def sess_opts():
+                    # ORT defaults to one spinning thread per core; between our sporadic calls those threads
+                    # busy-wait and burned several cores. Two non-spinning threads are plenty for these models.
+                    so = ort.SessionOptions()
+                    so.intra_op_num_threads, so.inter_op_num_threads = 2, 1
+                    so.add_session_config_entry("session.intra_op.allow_spinning", "0")
+                    so.add_session_config_entry("session.inter_op.allow_spinning", "0")
+                    return so
                 self._alpr = ALPR(detector_model=self.cfg.plate_detector, ocr_model=self.cfg.plate_ocr,
-                                  detector_providers=cpu, ocr_providers=cpu, ocr_device="cpu")
+                                  detector_providers=cpu, ocr_providers=cpu, ocr_device="cpu",
+                                  detector_sess_options=sess_opts(), ocr_sess_options=sess_opts())
                 log.info("ALPR loaded")
             except Exception:  # noqa: BLE001
                 log.exception("ALPR failed to load; plates disabled")
@@ -211,8 +224,11 @@ class Detector:
                 best.best_crop = _crop(img, nb, pad=0.15)
                 best.best_frame = img.copy()
                 best.snapshot_dirty = True
-            if self._alpr and label in VEHICLES and best.plate_conf < 0.9 and ts - best.last_plate_try > 1.0:
+            # Each try decodes a full-res GOP, so back off (1,2,4..30 s) on plates that won't read, e.g. parked cars.
+            if (self._alpr and label in VEHICLES and best.plate_conf < 0.9
+                    and ts - best.last_plate_try > min(PLATE_RETRY_MAX_S, 2.0 ** best.plate_tries)):
                 best.last_plate_try = ts
+                best.plate_tries += 1
                 plate_jobs.append(best)
             (new if is_new else upd).append(best)
             seen.append(best)
