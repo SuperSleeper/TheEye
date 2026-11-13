@@ -14,7 +14,7 @@ import av
 import cv2
 import numpy as np
 
-from .config import CameraConfig
+from .config import CameraConfig, redact
 from .ringbuffer import Pkt, RingBuffer
 
 log = logging.getLogger("theeye.camera")
@@ -100,8 +100,9 @@ class Camera:
                                 self._emit(fr, now)
                 c.close()
             except Exception as e:  # noqa: BLE001 - camera errors are expected; keep retrying
-                self.status.update(main="error", main_err=str(e))
-                log.warning("[%s] main stream error: %s (retry in %.0fs)", self.id, e, backoff)
+                err = redact(str(e))
+                self.status.update(main="error", main_err=err)
+                log.warning("[%s] main stream error: %s (retry in %.0fs)", self.id, err, backoff)
             self._stop.wait(backoff)
             backoff = min(backoff * 2, 30)
 
@@ -125,8 +126,9 @@ class Camera:
                         self._emit(fr, now)
                 c.close()
             except Exception as e:  # noqa: BLE001
-                self.status.update(sub="error", sub_err=str(e))
-                log.warning("[%s] sub stream error: %s (retry in %.0fs)", self.id, e, backoff)
+                err = redact(str(e))
+                self.status.update(sub="error", sub_err=err)
+                log.warning("[%s] sub stream error: %s (retry in %.0fs)", self.id, err, backoff)
             self._stop.wait(backoff)
             backoff = min(backoff * 2, 30)
 

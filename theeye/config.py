@@ -2,12 +2,21 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
+
+_URL_CREDS = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://[^:/@\s]*):[^@\s]*@")
+
+
+def redact(text: str) -> str:
+    """Mask passwords in any URLs inside text (error messages from ffmpeg/PyAV include the full URL)."""
+    return _URL_CREDS.sub(r"\1:********@", text)
+
 
 # Brand presets: RTSP paths for main/sub streams. {ch} = channel number (1-based).
 BRANDS: dict[str, dict] = {

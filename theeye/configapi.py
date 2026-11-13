@@ -20,7 +20,7 @@ from fastapi import Body, FastAPI, HTTPException
 from pydantic import ValidationError
 
 from .camera import RTSP_OPTS
-from .config import BRANDS, CameraConfig, Config, save_config
+from .config import BRANDS, CameraConfig, Config, redact, save_config
 
 log = logging.getLogger("theeye.setup")
 MASK = "********"
@@ -204,7 +204,7 @@ def register(app: FastAPI, hub, searcher, config_path: Path) -> None:
         except asyncio.TimeoutError:
             return {"ok": False, "error": "timed out", "url": mask_url(url)}
         except Exception as e:  # noqa: BLE001 - surface camera/ffmpeg errors to the form
-            msg = str(e)
+            msg = redact(str(e))
             if cfg.password:
                 msg = msg.replace(cfg.password, MASK)
             return {"ok": False, "error": msg, "url": mask_url(url)}
