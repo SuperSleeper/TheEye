@@ -481,13 +481,14 @@ function camSummary(c, i) {
   const st = p ? (p.ok ? `<span class="good">✓ ${p.width}×${p.height} ${p.codec}</span>` : '<span class="warn">✗ test failed</span>') : '';
   return `${p?.snapshot ? `<img src="${p.snapshot}">` : ''}<span class="t">${esc(c.name || c.id || 'New camera')}</span>
     <span class="muted small">${esc(c.id)} · ${esc(where)}</span>${c.enabled ? '' : '<span class="badge">disabled</span>'} ${st}
-    <span class="chev">${S.open.has(i) ? '▾' : '▸'}</span>`;
+    <button type="button" class="cam-edit${S.open.has(i) ? '' : ' primary'}">${S.open.has(i) ? 'Close ▴' : 'Edit ▾'}</button>`;
 }
 
 function renderCams() {
   const box = $('#cfg-cams');
   if (!S.cfg.cameras.length) { box.innerHTML = '<p class="muted">No cameras yet.</p>'; return; }
-  box.innerHTML = S.cfg.cameras.map((c, i) => `<div class="cam" data-i="${i}"><div class="cam-row">${camSummary(c, i)}</div>
+  const hint = S.cfg.cameras.length && !S.open.size ? '<p class="small muted">Click a camera (or its <b>Edit</b> button) to change its settings.</p>' : '';
+  box.innerHTML = hint + S.cfg.cameras.map((c, i) => `<div class="cam" data-i="${i}"><div class="cam-row">${camSummary(c, i)}</div>
     ${S.open.has(i) ? camEditor(c, i) : ''}</div>`).join('');
   $$('#cfg-cams .cam').forEach(el => {
     const i = +el.dataset.i, c = S.cfg.cameras[i];
