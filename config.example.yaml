@@ -24,7 +24,7 @@ cameras:
 
   # Brand presets build the URLs from host + login. Brands: hikvision, dahua, reolink, uniview, axis, tapo,
   # foscam, wyze (RTSPS, port 322), wyze_rtsp (plain RTSP, port 554), custom (explicit main_url/sub_url).
-  # Wyze Cam v3 / Pan v3 need Wyze's RTSP firmware; create the RTSP login in the Wyze app
+  # Wyze Cam v3 / v4 / Pan v3 need RTSP enabled in the Wyze app; create the RTSP login in the Wyze app
   # (Settings → Advanced Settings → RTSP). Wyze has no sub stream, so analysis decodes the main stream.
   - id: back_yard
     name: Back yard

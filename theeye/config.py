@@ -34,15 +34,15 @@ BRANDS: dict[str, dict] = {
              "main": "/axis-media/media.amp?camera={ch}", "sub": "/axis-media/media.amp?camera={ch}&resolution=640x360"},
     "tapo": {"label": "TP-Link Tapo / VIGI", "port": 554, "main": "/stream1", "sub": "/stream2"},
     "foscam": {"label": "Foscam", "port": 88, "main": "/videoMain", "sub": "/videoSub"},
-    # Wyze's built-in RTSP (Cam v3 4.36.16.x / Pan v3 4.55.16.x and later). RTSPS is the app default;
+    # Wyze's built-in RTSP (Cam v3 4.36.16.x / Pan v3 4.55.16.x and later; also seen on Cam v4). RTSPS is the app default;
     # plain RTSP has to be enabled by accepting a security warning in the app. Single stream only.
-    "wyze": {"label": "Wyze Cam v3 / Pan v3 — RTSPS (secure)", "port": 322, "scheme": "rtsps",
+    "wyze": {"label": "Wyze Cam v3 / v4 / Pan v3 — RTSPS (secure)", "port": 322, "scheme": "rtsps",
              "main": "/stream0", "sub": "",
              "note": "Create the login in the Wyze app: camera → Settings → Advanced Settings → RTSP → Set Up "
                      "(it is separate from your Wyze account). Wyze has a single stream, so motion/AI decode the "
-                     "full-resolution stream (more CPU). Cam v4 / OG have no built-in RTSP — use docker-wyze-bridge "
-                     "with Custom URL."},
-    "wyze_rtsp": {"label": "Wyze Cam v3 / Pan v3 — plain RTSP", "port": 554, "main": "/stream0", "sub": "",
+                     "full-resolution stream (more CPU). Models without RTSP in the app (e.g. Cam OG) can "
+                     "go through docker-wyze-bridge with Custom URL."},
+    "wyze_rtsp": {"label": "Wyze Cam v3 / v4 / Pan v3 — plain RTSP", "port": 554, "main": "/stream0", "sub": "",
                   "note": "Requires turning off Secure RTSP (RTSPS) in the Wyze app's RTSP settings. Prefer the "
                           "RTSPS option unless a client can't do TLS. Single stream only."},
     "custom": {"label": "Custom URL (any RTSP / RTMP / HTTP / UDP source)", "port": 554, "main": "", "sub": ""},
