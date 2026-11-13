@@ -29,7 +29,8 @@ def main() -> None:
     if not cfg_path.exists():
         logging.warning("%s not found — starting empty; open the Setup tab to configure", cfg_path)
     app = create_app(hub, searcher, cfg_path)
-    uvicorn.run(app, host=cfg.server.host, port=cfg.server.port, log_level="warning")
+    # live-view streams never end on their own; without a timeout, shutdown waits for every open browser tab
+    uvicorn.run(app, host=cfg.server.host, port=cfg.server.port, log_level="warning", timeout_graceful_shutdown=3)
 
 
 if __name__ == "__main__":
