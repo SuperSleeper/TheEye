@@ -37,6 +37,18 @@ def stream_opts(url: str) -> dict:
     return dict(RTSP_OPTS) if url.startswith("rtsp://") else {}
 
 
+AUTH_RETRY_S = 300.0     # cameras (Wyze included) lock out clients that keep failing to log in
+MAX_RETRY_S = 60.0
+
+
+def _is_auth_error(e: Exception) -> bool:
+    return isinstance(e, getattr(av, "HTTPUnauthorizedError", ())) or "401" in str(e) or "nauthorized" in str(e)
+
+
+def _next_backoff(e: Exception, backoff: float) -> float:
+    return AUTH_RETRY_S if _is_auth_error(e) else min(max(backoff, 1.0) * 2, MAX_RETRY_S)
+
+
 def _open(url: str) -> av.container.InputContainer:
     return av.open(url, options=stream_opts(url), timeout=(10.0, 10.0))
 
@@ -81,6 +93,7 @@ class Camera:
         backoff = 1.0
         analyse_here = not self.cfg.sub_url
         while not self._stop.is_set():
+            c = None
             try:
                 c = _open(self.cfg.main_url)
                 vs = c.streams.video[0]
@@ -105,18 +118,25 @@ class Camera:
                         for fr in pkt.decode():
                             if sampler.take(now):
                                 self._emit(fr, now)
-                c.close()
+                backoff = 1.0                # stream ended normally: reconnect promptly
             except Exception as e:  # noqa: BLE001 - camera errors are expected; keep retrying
+                backoff = _next_backoff(e, backoff)
                 err = redact(str(e))
                 self.status.update(main="error", main_err=err)
                 log.warning("[%s] main stream error: %s (retry in %.0fs)", self.id, err, backoff)
+            finally:
+                if c is not None:            # always release the camera-side session
+                    try:
+                        c.close()
+                    except Exception:  # noqa: BLE001
+                        pass
             self._stop.wait(backoff)
-            backoff = min(backoff * 2, 30)
 
     # ------------------------------------------------------------------- sub
     def _sub_loop(self) -> None:
         backoff = 1.0
         while not self._stop.is_set():
+            c = None
             try:
                 c = _open(self.cfg.sub_url)
                 vs = c.streams.video[0]
@@ -131,13 +151,19 @@ class Camera:
                     now = time.time()
                     if sampler.take(now):
                         self._emit(fr, now)
-                c.close()
+                backoff = 1.0
             except Exception as e:  # noqa: BLE001
+                backoff = _next_backoff(e, backoff)
                 err = redact(str(e))
                 self.status.update(sub="error", sub_err=err)
                 log.warning("[%s] sub stream error: %s (retry in %.0fs)", self.id, err, backoff)
+            finally:
+                if c is not None:
+                    try:
+                        c.close()
+                    except Exception:  # noqa: BLE001
+                        pass
             self._stop.wait(backoff)
-            backoff = min(backoff * 2, 30)
 
     def _emit(self, fr: av.VideoFrame, now: float) -> None:
         if self._stop.is_set():          # camera removed/replaced: old thread may linger until next packet
