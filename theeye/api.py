@@ -295,5 +295,13 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         return FileResponse(p, media_type=mt)
 
     configapi.register(app, hub, searcher, config_path)
-    app.mount("/", StaticFiles(directory=WEB, html=True), name="web")
+    class NoCacheStatic(StaticFiles):
+        """UI files change with every update; make browsers revalidate (cheap 304 via ETag) instead of
+        heuristically caching an old app.js next to a new index.html."""
+        async def get_response(self, path, scope):
+            resp = await super().get_response(path, scope)
+            resp.headers["Cache-Control"] = "no-cache"
+            return resp
+
+    app.mount("/", NoCacheStatic(directory=WEB, html=True), name="web")
     return app

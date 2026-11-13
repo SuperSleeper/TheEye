@@ -16,6 +16,12 @@ let cameras = [];
 let zonesCache = [];
 const camName = id => (cameras.find(c => c.id === id) || {}).name || id;
 
+window.addEventListener('error', e => {
+  const b = document.querySelector('#cfg-banner');
+  if (b) b.innerHTML = `<div class="banner err"><div>Page error: ${esc(e.message)} — try a hard refresh (Ctrl+Shift+R).</div></div>`;
+});
+window.addEventListener('unhandledrejection', e => console.error('Unhandled:', e.reason));
+
 // ---------------------------------------------------------------- tabs
 const timers = {};
 function showTab(name) {
@@ -465,7 +471,14 @@ const fmtBytes = b => b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : (b / 1e6).toFixe
 
 async function initSetup(force = false) {
   if (S.cfg && S.dirty && !force) { openPending(); renderSetup(); return; }
-  const r = await api('/api/config');
+  let r;
+  try { r = await api('/api/config'); }
+  catch (e) {
+    banner('err', `Couldn't load the configuration (${esc(e.message)}). The server may be restarting.`,
+      '<button type="button" id="cfg-retry">Retry</button>');
+    $('#cfg-retry').onclick = () => initSetup(true);
+    return;
+  }
   S.cfg = r.config; S.saved = JSON.stringify(r.config); S.brands = r.brands; S.system = r.system; S.path = r.path;
   S.cfg.cameras.forEach(c => c.orig_id = c.id);
   (S.cfg.credentials ||= []).forEach(x => x.orig_name = x.name);
