@@ -1,0 +1,47 @@
+# TheEye configuration. Copy to config.yaml and edit.
+# Cameras are defined here; zones and rules are edited in the web UI (stored in data/theeye.db).
+
+cameras:
+  # main_url = high-res stream. Packets are kept compressed in RAM (ring_seconds) and copied to disk on events.
+  # sub_url  = low-res stream (e.g. 640x360). Decoded for motion/AI. If omitted, the main stream is decoded instead
+  #            (works, but costs far more CPU — always set a sub stream on real cameras).
+  # Tip: set each camera's keyframe interval (GOP / I-frame interval) to 1-2 s. Clips and pre-roll start on a
+  #      keyframe, and plate reading decodes from the last keyframe.
+  - id: driveway
+    name: Driveway
+    main_url: "rtsp://user:pass@192.168.1.50:554/Streaming/Channels/101"   # Hikvision style
+    sub_url:  "rtsp://user:pass@192.168.1.50:554/Streaming/Channels/102"
+    ring_seconds: 300        # 5 min loop: ~45 MB/min at 6 Mbit/s -> ~230 MB of RAM
+    analyze_fps: 5           # sub-stream frames/s through motion analysis
+    detect_fps: 3            # frames/s sent to the object detector while motion/objects are active
+    always_detect: false     # true = run AI even without motion (catches slow movers; costs more GPU)
+
+  - id: front_door
+    name: Front door
+    main_url: "rtsp://user:pass@192.168.1.51:554/cam/realmonitor?channel=1&subtype=0"   # Dahua/Amcrest style
+    sub_url:  "rtsp://user:pass@192.168.1.51:554/cam/realmonitor?channel=1&subtype=1"
+    ring_seconds: 600
+
+detector:
+  enabled: true
+  model: yolo11s.pt          # yolo11n.pt (fastest) .. yolo11m.pt (more accurate). Downloaded automatically.
+  device: "cuda:0"
+  confidence: 0.45
+  classes: [person, bicycle, car, motorcycle, bus, truck, dog, cat, bird]
+  plates: true               # licence-plate reading on vehicles (uses the full-res main stream)
+  embeddings: true           # CLIP embeddings for visual search ("red pickup", "man in hoodie")
+
+llm:
+  enabled: true
+  url: "http://127.0.0.1:11434"   # Ollama
+  model: "gemma3:4b"              # small enough to share the GPU with the detectors
+  keep_alive: "5m"
+
+storage:
+  path: data                 # clips/, snaps/, theeye.db
+  max_gb: 500                # oldest clips deleted beyond this
+  ram_budget_gb: 24          # hard cap across all ring buffers (oldest GOPs dropped first)
+
+server:
+  host: 0.0.0.0
+  port: 8080

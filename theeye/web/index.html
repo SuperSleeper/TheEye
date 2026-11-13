@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TheEye NVR</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">◉ TheEye</div>
+  <nav id="tabs">
+    <button data-tab="live" class="active">Live</button>
+    <button data-tab="events">Events</button>
+    <button data-tab="search">Search</button>
+    <button data-tab="triggers">Motion log</button>
+    <button data-tab="zones">Zones</button>
+    <button data-tab="rules">Rules</button>
+    <button data-tab="setup">Setup</button>
+  </nav>
+  <div id="stats" class="muted"></div>
+</header>
+
+<main>
+  <!-- LIVE -->
+  <section id="tab-live" class="tab active">
+    <div id="live-grid" class="grid"></div>
+  </section>
+
+  <!-- EVENTS -->
+  <section id="tab-events" class="tab">
+    <div class="toolbar">
+      <select id="ev-cam"><option value="">All cameras</option></select>
+      <button id="ev-refresh">Refresh</button>
+    </div>
+    <div id="ev-list" class="cards"></div>
+  </section>
+
+  <!-- SEARCH -->
+  <section id="tab-search" class="tab">
+    <form id="search-form" class="searchbar">
+      <input id="search-q" placeholder="e.g. “white van in the driveway last night”, “plate starting with 7AB”, “person with a dog yesterday afternoon”" autocomplete="off">
+      <button type="submit">Search</button>
+    </form>
+    <div id="search-meta" class="muted"></div>
+    <div id="search-results" class="cards"></div>
+  </section>
+
+  <!-- TRIGGERS -->
+  <section id="tab-triggers" class="tab">
+    <div class="toolbar">
+      <select id="tr-cam"><option value="">All cameras</option></select>
+      <button id="tr-refresh">Refresh</button>
+      <span class="muted">Raw motion triggers per zone. These only become events when a rule says so.</span>
+    </div>
+    <table class="table"><thead><tr><th>Camera</th><th>Zone</th><th>Start</th><th>Duration</th><th>Peak area</th></tr></thead>
+      <tbody id="tr-body"></tbody></table>
+  </section>
+
+  <!-- ZONES -->
+  <section id="tab-zones" class="tab">
+    <div class="toolbar">
+      <select id="zn-cam"></select>
+      <button id="zn-new">+ New zone</button>
+      <span class="muted" id="zn-help">Click to add points · click the first point (or press Enter) to close · drag points to adjust · Esc cancels</span>
+    </div>
+    <div class="zone-layout">
+      <div class="zone-stage">
+        <img id="zn-img" alt="">
+        <canvas id="zn-canvas"></canvas>
+      </div>
+      <aside class="panel">
+        <h3>Zones</h3>
+        <ul id="zn-list" class="list"></ul>
+        <form id="zn-form" class="form hidden">
+          <label>Name <input name="name" required></label>
+          <label>Type
+            <select name="kind">
+              <option value="motion">Motion trigger zone</option>
+              <option value="detect">Detection zone (objects only)</option>
+              <option value="exclude">Exclusion (ignore)</option>
+            </select>
+          </label>
+          <label>Sensitivity <span class="val" data-for="sensitivity"></span>
+            <input type="range" name="sensitivity" min="0" max="1" step="0.05"></label>
+          <label>Min changed area <span class="val" data-for="min_area"></span>
+            <input type="range" name="min_area" min="0.001" max="0.5" step="0.001"></label>
+          <label>Min frames <input type="number" name="min_frames" min="1" max="50"></label>
+          <label>Colour <input type="color" name="color"></label>
+          <label class="row"><input type="checkbox" name="enabled"> Enabled</label>
+          <div class="row">
+            <button type="submit">Save</button>
+            <button type="button" id="zn-delete" class="danger">Delete</button>
+          </div>
+          <p class="muted small">Live: zone flashes when its motion trigger is active — tune sensitivity while watching.</p>
+        </form>
+      </aside>
+    </div>
+  </section>
+
+  <!-- RULES -->
+  <section id="tab-rules" class="tab">
+    <div class="zone-layout">
+      <div>
+        <div class="toolbar"><button id="rl-new">+ New rule</button>
+          <span class="muted">Rules turn triggers & detections into recorded <b>events</b>.</span></div>
+        <ul id="rl-list" class="list big"></ul>
+      </div>
+      <aside class="panel wide">
+        <form id="rl-form" class="form hidden">
+          <label>Name <input name="name" required></label>
+          <label>Camera <select name="camera_id"></select></label>
+          <label>Fire when <select name="match"><option value="any">ANY condition is true</option>
+            <option value="all">ALL conditions are true</option></select></label>
+          <div id="rl-conds"></div>
+          <div class="row"><button type="button" data-add="motion">+ Motion</button>
+            <button type="button" data-add="object">+ Object</button>
+            <button type="button" data-add="plate">+ Plate</button></div>
+          <div class="row3">
+            <label>Pre-roll s <input type="number" name="preroll" min="0"></label>
+            <label>Post-roll s <input type="number" name="postroll" min="0"></label>
+            <label>Max length s <input type="number" name="max_length" min="5"></label>
+          </div>
+          <fieldset><legend>Schedule (optional)</legend>
+            <div class="days" id="rl-days"></div>
+            <div class="row"><label>From <input type="time" name="s_start"></label>
+              <label>To <input type="time" name="s_end"></label></div>
+          </fieldset>
+          <label>Webhook URL <input name="webhook" placeholder="https://…"></label>
+          <label class="row"><input type="checkbox" name="record"> Record clip</label>
+          <label class="row"><input type="checkbox" name="enabled"> Enabled</label>
+          <div class="row"><button type="submit">Save</button>
+            <button type="button" id="rl-delete" class="danger">Delete</button></div>
+        </form>
+      </aside>
+    </div>
+  </section>
+
+  <!-- SETUP -->
+  <section id="tab-setup" class="tab">
+    <div class="setup">
+      <div id="cfg-banner"></div>
+
+      <div class="card-s">
+        <div class="card-h"><h2>Cameras</h2><button type="button" id="cfg-add-cam" class="primary">+ Add camera</button></div>
+        <p class="muted small">Pick your camera brand and enter its address and login — stream URLs are built for you.
+          Use <b>Custom URL</b> for anything else (RTSP, RTMP, HTTP-FLV/MJPEG, UDP/SRT, files). Test each stream before saving.</p>
+        <div id="cfg-cams"></div>
+      </div>
+
+      <div class="card-s">
+        <div class="card-h"><h2>AI detection</h2><span class="badge">restart to apply</span></div>
+        <div class="fgrid">
+          <label class="row"><input type="checkbox" data-k="detector.enabled"> Object detection enabled</label>
+          <label>Model
+            <select data-k="detector.model">
+              <option value="yolo11n.pt">YOLO11 nano — fastest, least accurate</option>
+              <option value="yolo11s.pt">YOLO11 small — recommended</option>
+              <option value="yolo11m.pt">YOLO11 medium — more accurate, ~2× GPU</option>
+              <option value="yolo11l.pt">YOLO11 large — best accuracy, heavy</option>
+            </select></label>
+          <label>Device
+            <select data-k="detector.device"><option value="cuda:0">GPU (cuda:0)</option><option value="cpu">CPU</option></select></label>
+          <label>Min confidence <span class="val" data-show="detector.confidence"></span>
+            <input type="range" min="0.1" max="0.95" step="0.05" data-k="detector.confidence" data-num></label>
+        </div>
+        <div class="sub-h">Objects to detect</div>
+        <div class="checks" id="cfg-classes"></div>
+        <div class="fgrid">
+          <label class="row"><input type="checkbox" data-k="detector.plates"> Read licence plates on vehicles</label>
+          <label class="row"><input type="checkbox" data-k="detector.embeddings"> Visual search embeddings (CLIP)</label>
+        </div>
+      </div>
+
+      <div class="card-s">
+        <div class="card-h"><h2>Smart search (local LLM)</h2></div>
+        <div class="fgrid">
+          <label class="row"><input type="checkbox" data-k="llm.enabled"> Use LLM to interpret searches</label>
+          <label>Ollama URL <input data-k="llm.url" placeholder="http://127.0.0.1:11434"></label>
+          <label>Model <span class="inline">
+            <select data-k="llm.model" id="cfg-llm-model"></select>
+            <button type="button" id="cfg-llm-refresh" title="Reload model list">↻</button></span>
+            <span class="small" id="cfg-llm-status"></span></label>
+          <label>Keep loaded for <input data-k="llm.keep_alive" placeholder="5m"></label>
+        </div>
+        <p class="muted small">Small models (3–8B) leave GPU memory for detection. The interpreted filter is always shown with search results.</p>
+      </div>
+
+      <div class="card-s">
+        <div class="card-h"><h2>Storage &amp; memory</h2></div>
+        <div class="fgrid">
+          <label>Data folder <input data-k="storage.path"><span class="small muted">clips, snapshots, database (restart to apply)</span></label>
+          <label>Max disk for clips (GB) <input type="number" min="1" step="1" data-k="storage.max_gb" data-num>
+            <span class="small muted">oldest clips are deleted beyond this</span></label>
+          <label>RAM budget for loops (GB) <input type="number" min="0.5" step="0.5" data-k="storage.ram_budget_gb" data-num>
+            <span class="small muted">hard cap across all cameras</span></label>
+        </div>
+        <div id="cfg-ram"></div>
+      </div>
+
+      <div class="card-s">
+        <div class="card-h"><h2>Web server</h2><span class="badge">restart to apply</span></div>
+        <div class="fgrid">
+          <label>Listen address <input data-k="server.host"></label>
+          <label>Port <input type="number" min="1" max="65535" data-k="server.port" data-num></label>
+        </div>
+      </div>
+      <p class="muted small" id="cfg-path"></p>
+    </div>
+    <div class="savebar" id="cfg-savebar">
+      <span id="cfg-dirty" class="muted">No changes</span>
+      <button type="button" id="cfg-discard">Discard</button>
+      <button type="button" id="cfg-save" class="primary">Save configuration</button>
+    </div>
+  </section>
+</main>
+
+<dialog id="player">
+  <div class="player-head"><b id="pl-title"></b><button id="pl-close">✕</button></div>
+  <video id="pl-video" controls playsinline></video>
+  <div id="pl-info"></div>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>

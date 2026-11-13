@@ -1,0 +1,6 @@
+.venv/
+data/
+config.yaml
+__pycache__/
+*.pt
+*.onnx

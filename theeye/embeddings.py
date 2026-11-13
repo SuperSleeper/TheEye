@@ -1,0 +1,53 @@
+"""CLIP image/text embeddings for visual ("person in a red jacket") search."""
+from __future__ import annotations
+
+import logging
+import threading
+from typing import Optional
+
+import numpy as np
+
+log = logging.getLogger("theeye.clip")
+
+
+class Embedder:
+    def __init__(self, model: str, pretrained: str, device: str):
+        self.model_name, self.pretrained, self.device = model, pretrained, device
+        self._model = self._preprocess = self._tok = None
+        self._lock = threading.Lock()
+        self.dim = 0
+
+    def _load(self) -> None:
+        if self._model is not None:
+            return
+        import open_clip
+        import torch
+        dev = self.device if torch.cuda.is_available() else "cpu"
+        m, _, pre = open_clip.create_model_and_transforms(self.model_name, pretrained=self.pretrained,
+                                                          device=dev)
+        m.eval()
+        self._model, self._preprocess, self._tok = m, pre, open_clip.get_tokenizer(self.model_name)
+        self.device = dev
+        log.info("CLIP %s loaded on %s", self.model_name, dev)
+
+    def image(self, bgr: np.ndarray) -> Optional[np.ndarray]:
+        import torch
+        from PIL import Image
+        with self._lock:
+            self._load()
+            img = Image.fromarray(bgr[:, :, ::-1])
+            x = self._preprocess(img).unsqueeze(0).to(self.device)
+            with torch.no_grad():
+                v = self._model.encode_image(x).float()
+            v = torch.nn.functional.normalize(v, dim=-1)[0].cpu().numpy().astype(np.float32)
+            self.dim = v.shape[0]
+            return v
+
+    def text(self, s: str) -> np.ndarray:
+        import torch
+        with self._lock:
+            self._load()
+            t = self._tok([f"a photo of {s}"]).to(self.device)
+            with torch.no_grad():
+                v = self._model.encode_text(t).float()
+            return torch.nn.functional.normalize(v, dim=-1)[0].cpu().numpy().astype(np.float32)
