@@ -83,13 +83,16 @@ function initLive() {
   const grid = $('#live-grid');
   grid.innerHTML = cameras.length ? cameras.map(c => `
     <div class="tile" data-cam="${esc(c.id)}">
-      <div style="position:relative"><img src="/api/cameras/${encodeURIComponent(c.id)}/live.mjpg"><canvas></canvas></div>
+      <div style="position:relative"><img alt=""><canvas></canvas><div class="tile-msg">Connecting…</div></div>
       <div class="bar"><span class="name">${esc(c.name)}</span>
         <span class="badge st"></span><span class="badge recb hidden rec">REC</span>
         <span class="muted ring"></span>
-        <button class="recnow">● Record 30s</button></div>
-    </div>`).join('') : '<p class="muted">No cameras configured — add them to config.yaml.</p>';
+        <button class="recnow">● Record 30s</button>
+        <button class="cfg" title="Edit this camera in Setup">⚙</button></div>
+    </div>`).join('') : '<p class="muted">No cameras configured — add them on the Setup tab.</p>';
   $$('.tile', grid).forEach(tile => {
+    $('.cfg', tile).onclick = () => editCamera(tile.dataset.cam);
+    pumpFrames(tile);
     $('.recnow', tile).onclick = async () => {
       await api('/api/events/manual', { method: 'POST', body: { camera_id: tile.dataset.cam, duration: 30 } });
     };
@@ -101,8 +104,11 @@ function initLive() {
       const c = cams.find(x => x.id === id); if (!c) continue;
       const st = $('.st', tile);
       const live = c.status.main === 'live';
-      st.textContent = live ? c.status.main_codec : (c.status.main_err || c.status.main);
+      st.textContent = live ? c.status.main_codec : c.status.main;
       st.className = 'badge st ' + (live ? 'ok' : 'err');
+      const msg = $('.tile-msg', tile);
+      msg.classList.toggle('hidden', live && tile.dataset.frames === '1');
+      if (!live) msg.textContent = friendlyCamError(c.status.main_err, c.status.main);
       $('.ring', tile).textContent = `loop ${c.ring.seconds}s · ${(c.ring.bytes / 1e6).toFixed(0)} MB`;
       api(`/api/cameras/${encodeURIComponent(id)}/state`).then(s => {
         $('.recb', tile).classList.toggle('hidden', !s.recording);
@@ -112,6 +118,29 @@ function initLive() {
   };
   timers.live = setInterval(tick, 500); tick();
 }
+
+// Live view polls single JPEGs instead of MJPEG: an endless MJPEG response holds one of the browser's
+// 6 connections per host, so with 6+ cameras every other request on the page would queue forever.
+function pumpFrames(tile) {
+  const img = $('img', tile), url = `/api/cameras/${encodeURIComponent(tile.dataset.cam)}/snapshot.jpg`;
+  const next = delay => setTimeout(() => {
+    if (!tile.isConnected) return;
+    if (document.hidden) return next(1000);
+    img.src = `${url}?t=${Date.now()}`;
+  }, delay);
+  img.onload = () => { tile.dataset.frames = '1'; next(150); };
+  img.onerror = () => { tile.dataset.frames = '0'; next(2000); };
+  next(0);
+}
+function friendlyCamError(err, state) {
+  if (!err) return state === 'init' ? 'Connecting…' : 'No video yet';
+  if (/401|unauthori[sz]ed|authoriz/i.test(err)) return 'Login failed — check this camera\'s username/password (⚙ → Setup)';
+  if (/refused/i.test(err)) return 'Camera refused the connection — is RTSP enabled on it, and the port right?';
+  if (/timed? ?out|unreachable|no route/i.test(err)) return 'Can\'t reach the camera — check its IP address and that it is online';
+  if (/404|not found/i.test(err)) return 'Stream path not found — check the brand/model setting';
+  return err;
+}
+function editCamera(id) { S.pendingOpen = id; showTab('setup'); }
 
 // ---------------------------------------------------------------- events
 async function loadEvents() {
@@ -435,15 +464,24 @@ const slug = s => (s || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/
 const fmtBytes = b => b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : (b / 1e6).toFixed(0) + ' MB';
 
 async function initSetup(force = false) {
-  if (S.cfg && S.dirty && !force) { renderSetup(); return; }
+  if (S.cfg && S.dirty && !force) { openPending(); renderSetup(); return; }
   const r = await api('/api/config');
   S.cfg = r.config; S.saved = JSON.stringify(r.config); S.brands = r.brands; S.system = r.system; S.path = r.path;
   S.cfg.cameras.forEach(c => c.orig_id = c.id);
   (S.cfg.credentials ||= []).forEach(x => x.orig_name = x.name);
   S.saved = JSON.stringify(S.cfg);
   if (!S.cfg.cameras.length) S.open.add(0);
+  openPending();
   if (!r.exists) banner('info', `No configuration file yet — fill in the form and save to create <code>${esc(r.path)}</code>.`);
   renderSetup(); loadLlmModels();
+}
+function openPending() {
+  if (!S.pendingOpen) return;
+  const i = S.cfg.cameras.findIndex(c => c.id === S.pendingOpen);
+  S.pendingOpen = null;
+  if (i < 0) return;
+  S.open = new Set([i]);
+  setTimeout(() => $(`#cfg-cams .cam[data-i="${i}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
 }
 function markDirty() {
   S.dirty = JSON.stringify(S.cfg) !== S.saved;
