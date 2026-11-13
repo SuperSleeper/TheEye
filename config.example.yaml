@@ -22,6 +22,23 @@ cameras:
     sub_url:  "rtsp://user:pass@192.168.1.51:554/cam/realmonitor?channel=1&subtype=1"
     ring_seconds: 600
 
+  # Brand presets build the URLs from host + login. Brands: hikvision, dahua, reolink, uniview, axis, tapo,
+  # foscam, wyze (RTSPS, port 322), wyze_rtsp (plain RTSP, port 554), custom (explicit main_url/sub_url).
+  # Wyze Cam v3 / Pan v3 need Wyze's RTSP firmware; create the RTSP login in the Wyze app
+  # (Settings → Advanced Settings → RTSP). Wyze has no sub stream, so analysis decodes the main stream.
+  - id: back_yard
+    name: Back yard
+    brand: wyze
+    host: 192.168.1.60
+    credential: Wyze cameras     # use a saved login (below) instead of username/password
+
+# Saved logins: define once, reference from any brand-preset camera with `credential: <name>`.
+# Changing one here updates every camera that uses it.
+credentials:
+  - name: Wyze cameras
+    username: rtspuser
+    password: change-me
+
 detector:
   enabled: true
   model: yolo11s.pt          # yolo11n.pt (fastest) .. yolo11m.pt (more accurate). Downloaded automatically.

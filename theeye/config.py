@@ -19,6 +19,8 @@ def redact(text: str) -> str:
 
 
 # Brand presets: RTSP paths for main/sub streams. {ch} = channel number (1-based).
+# Optional keys: "scheme" (default rtsp), "note" (shown in the Setup form). An empty "sub" means the
+# camera has no low-res stream, so analysis decodes the main stream.
 BRANDS: dict[str, dict] = {
     "hikvision": {"label": "Hikvision / Annke / Swann (Hik OEM)", "port": 554,
                   "main": "/Streaming/Channels/{ch}01", "sub": "/Streaming/Channels/{ch}02"},
@@ -32,6 +34,17 @@ BRANDS: dict[str, dict] = {
              "main": "/axis-media/media.amp?camera={ch}", "sub": "/axis-media/media.amp?camera={ch}&resolution=640x360"},
     "tapo": {"label": "TP-Link Tapo / VIGI", "port": 554, "main": "/stream1", "sub": "/stream2"},
     "foscam": {"label": "Foscam", "port": 88, "main": "/videoMain", "sub": "/videoSub"},
+    # Wyze's built-in RTSP (Cam v3 4.36.16.x / Pan v3 4.55.16.x and later). RTSPS is the app default;
+    # plain RTSP has to be enabled by accepting a security warning in the app. Single stream only.
+    "wyze": {"label": "Wyze Cam v3 / Pan v3 — RTSPS (secure)", "port": 322, "scheme": "rtsps",
+             "main": "/stream0", "sub": "",
+             "note": "Create the login in the Wyze app: camera → Settings → Advanced Settings → RTSP → Set Up "
+                     "(it is separate from your Wyze account). Wyze has a single stream, so motion/AI decode the "
+                     "full-resolution stream (more CPU). Cam v4 / OG have no built-in RTSP — use docker-wyze-bridge "
+                     "with Custom URL."},
+    "wyze_rtsp": {"label": "Wyze Cam v3 / Pan v3 — plain RTSP", "port": 554, "main": "/stream0", "sub": "",
+                  "note": "Requires turning off Secure RTSP (RTSPS) in the Wyze app's RTSP settings. Prefer the "
+                          "RTSPS option unless a client can't do TLS. Single stream only."},
     "custom": {"label": "Custom URL (any RTSP / RTMP / HTTP / UDP source)", "port": 554, "main": "", "sub": ""},
 }
 
@@ -40,7 +53,34 @@ def build_url(brand: str, host: str, port: int, user: str, password: str, path: 
     auth = ""
     if user:
         auth = quote(user, safe="") + (":" + quote(password, safe="") if password else "") + "@"
-    return f"rtsp://{auth}{host}:{port}{path}"
+    scheme = BRANDS.get(brand, {}).get("scheme", "rtsp")
+    return f"{scheme}://{auth}{host}:{port}{path}"
+
+
+class Credential(BaseModel):
+    """A saved login that several cameras can share; changing it updates every camera using it."""
+    name: str = Field(min_length=1, max_length=60)
+    username: str = ""
+    password: Optional[str] = None
+
+
+def resolve_credentials(cams: list, creds: list) -> list:
+    """Fill username/password of cameras that reference a saved credential (raw dicts, before validation)."""
+    by_name = {}
+    for c in creds or []:
+        c = c.model_dump() if isinstance(c, BaseModel) else c
+        by_name[c.get("name")] = c
+    out = []
+    for cam in cams or []:
+        cam = cam.model_dump() if isinstance(cam, BaseModel) else dict(cam)
+        ref = cam.get("credential")
+        if ref:
+            if ref not in by_name:
+                raise ValueError(f"camera {cam.get('id')!r} uses unknown saved login {ref!r}")
+            cam["username"] = by_name[ref].get("username") or None
+            cam["password"] = by_name[ref].get("password")
+        out.append(cam)
+    return out
 
 
 class CameraConfig(BaseModel):
@@ -52,6 +92,7 @@ class CameraConfig(BaseModel):
     port: Optional[int] = None
     username: Optional[str] = None
     password: Optional[str] = None
+    credential: Optional[str] = None   # name of a saved Credential; overrides username/password
     channel: int = 1
     main_url: str = ""                 # high-res stream -> RAM ring buffer -> clips
     sub_url: Optional[str] = None      # low-res stream -> motion/detection (falls back to main_url)
@@ -73,7 +114,7 @@ class CameraConfig(BaseModel):
             self.main_url = build_url(self.brand, self.host, port, self.username or "", self.password or "",
                                       b["main"].format(ch=self.channel))
             self.sub_url = build_url(self.brand, self.host, port, self.username or "", self.password or "",
-                                     b["sub"].format(ch=self.channel))
+                                     b["sub"].format(ch=self.channel)) if b["sub"] else None
         elif not self.main_url:
             raise ValueError("main_url is required for custom cameras")
         return self
@@ -83,6 +124,9 @@ class CameraConfig(BaseModel):
         if self.brand != "custom":           # URLs are regenerated from host/credentials
             d.pop("main_url", None)
             d.pop("sub_url", None)
+        if self.credential:                  # login lives in the shared credential
+            d.pop("username", None)
+            d.pop("password", None)
         return d
 
 
@@ -120,11 +164,22 @@ class ServerConfig(BaseModel):
 
 
 class Config(BaseModel):
+    credentials: list[Credential] = Field(default_factory=list)
     cameras: list[CameraConfig] = Field(default_factory=list)
     detector: DetectorConfig = Field(default_factory=DetectorConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _apply_credentials(cls, data):
+        if isinstance(data, dict) and data.get("cameras"):
+            names = [c.get("name") if isinstance(c, dict) else c.name for c in data.get("credentials") or []]
+            if len(names) != len(set(names)):
+                raise ValueError("saved login names must be unique")
+            data = {**data, "cameras": resolve_credentials(data["cameras"], data.get("credentials"))}
+        return data
 
     @property
     def data_dir(self) -> Path:

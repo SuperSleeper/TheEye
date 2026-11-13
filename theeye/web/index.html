@@ -149,6 +149,13 @@
       </div>
 
       <div class="card-s">
+        <div class="card-h"><h2>Saved logins</h2><button type="button" id="cfg-add-cred">+ Add login</button></div>
+        <p class="muted small">Store a username and password once and pick it on any camera. Changing a saved login
+          updates every camera that uses it. Passwords are kept in the config file (readable only by you) and never sent back to the browser.</p>
+        <div id="cfg-creds"></div>
+      </div>
+
+      <div class="card-s">
         <div class="card-h"><h2>AI detection</h2><span class="badge">restart to apply</span></div>
         <div class="fgrid">
           <label class="row"><input type="checkbox" data-k="detector.enabled"> Object detection enabled</label>

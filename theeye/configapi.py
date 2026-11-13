@@ -20,7 +20,7 @@ from fastapi import Body, FastAPI, HTTPException
 from pydantic import ValidationError
 
 from .camera import RTSP_OPTS
-from .config import BRANDS, CameraConfig, Config, redact, save_config
+from .config import BRANDS, CameraConfig, Config, Credential, redact, resolve_credentials, save_config
 
 log = logging.getLogger("theeye.setup")
 MASK = "********"
@@ -73,11 +73,31 @@ def merge_secrets(cams: list[dict], current: dict[str, CameraConfig]) -> list[di
                 c["password"] = old.password
             c["main_url"] = unmask_url(c.get("main_url"), old.main_url)
             c["sub_url"] = unmask_url(c.get("sub_url"), old.sub_url)
-        for k in ("host", "username", "password", "sub_url"):
+        for k in ("host", "username", "password", "sub_url", "credential"):
             if c.get(k) == "":
                 c[k] = None
         if c.get("brand") != "custom":
             c["main_url"], c["sub_url"] = "", None
+        out.append(c)
+    return out
+
+
+def public_credential(c: Credential) -> dict:
+    return {"name": c.name, "username": c.username, "password": None, "has_password": bool(c.password)}
+
+
+def merge_credential_secrets(creds: list[dict], current: dict[str, Credential],
+                             cams: dict[str, CameraConfig]) -> list[dict]:
+    """Blank password keeps the stored one. A login saved from an existing camera's form
+    ("from_camera") inherits that camera's stored password, which the browser never sees."""
+    out = []
+    for c in creds:
+        c = dict(c)
+        old = current.get(c.pop("orig_name", None) or c.get("name"))
+        src = cams.get(c.pop("from_camera", None) or "")
+        c.pop("has_password", None)
+        if not c.get("password"):
+            c["password"] = old.password if old else (src.password if src else None)
         out.append(c)
     return out
 
@@ -166,14 +186,19 @@ def register(app: FastAPI, hub, searcher, config_path: Path) -> None:
     def get_config():
         d = hub.cfg.model_dump()
         d["cameras"] = [public_camera(c) for c in hub.cfg.cameras]
+        d["credentials"] = [public_credential(c) for c in hub.cfg.credentials]
         return {"config": d, "path": str(config_path), "exists": config_path.exists(),
-                "brands": {k: {"label": v["label"], "port": v["port"]} for k, v in BRANDS.items()},
+                "brands": {k: {"label": v["label"], "port": v["port"], "scheme": v.get("scheme", "rtsp"),
+                               "has_sub": bool(v["sub"]) or k == "custom", "note": v.get("note", "")}
+                           for k, v in BRANDS.items()},
                 "system": {"ram_bytes": total_ram()}}
 
     @app.put("/api/config")
     def put_config(body: dict = Body(...)):
         with lock:
             body = dict(body)
+            body["credentials"] = merge_credential_secrets(
+                body.get("credentials") or [], {c.name: c for c in hub.cfg.credentials}, current_map())
             body["cameras"] = merge_secrets(body.get("cameras") or [], current_map())
             ids = [c.get("id") for c in body["cameras"]]
             if len(ids) != len(set(ids)):
@@ -190,12 +215,14 @@ def register(app: FastAPI, hub, searcher, config_path: Path) -> None:
         return {"saved": True, "restart_required": restart}
 
     @app.post("/api/config/probe")
-    async def probe(camera: dict = Body(...), stream: str = Body("main")):
+    async def probe(camera: dict = Body(...), stream: str = Body("main"), credentials: list = Body([])):
         cams = merge_secrets([camera], current_map())
+        creds = merge_credential_secrets(credentials, {c.name: c for c in hub.cfg.credentials}, current_map())
         try:
-            cfg = CameraConfig.model_validate(cams[0] | {"id": cams[0].get("id") or "probe"})
-        except ValidationError as e:
-            return {"ok": False, "error": "; ".join(_errors(e))}
+            cam = resolve_credentials(cams, creds)[0]
+            cfg = CameraConfig.model_validate(cam | {"id": cam.get("id") or "probe"})
+        except ValueError as e:      # includes ValidationError
+            return {"ok": False, "error": "; ".join(_errors(e)) if isinstance(e, ValidationError) else str(e)}
         url = cfg.sub_url if stream == "sub" else cfg.main_url
         if not url:
             return {"ok": False, "error": "no URL for this stream"}

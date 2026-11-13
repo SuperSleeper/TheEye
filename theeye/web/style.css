@@ -125,3 +125,10 @@ input:invalid { border-color: var(--danger); }
   .zone-layout { grid-template-columns: 1fr; } .panel.wide { min-width: 0; }
   .grid { grid-template-columns: 1fr; }
 }
+
+/* saved logins */
+.cred { padding: 10px 0; border-bottom: 1px solid var(--line, #ffffff14); }
+.cred:last-child { border-bottom: 0; }
+.login-info { align-self: end; padding-bottom: 6px; }
+.login-info.row { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+.note { margin: 8px 0; padding: 8px 10px; border-radius: 6px; background: var(--panel2); color: var(--text); }

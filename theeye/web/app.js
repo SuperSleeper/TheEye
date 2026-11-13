@@ -439,6 +439,7 @@ async function initSetup(force = false) {
   const r = await api('/api/config');
   S.cfg = r.config; S.saved = JSON.stringify(r.config); S.brands = r.brands; S.system = r.system; S.path = r.path;
   S.cfg.cameras.forEach(c => c.orig_id = c.id);
+  (S.cfg.credentials ||= []).forEach(x => x.orig_name = x.name);
   S.saved = JSON.stringify(S.cfg);
   if (!S.cfg.cameras.length) S.open.add(0);
   if (!r.exists) banner('info', `No configuration file yet — fill in the form and save to create <code>${esc(r.path)}</code>.`);
@@ -470,7 +471,7 @@ function renderSetup() {
   $$('#cfg-classes input').forEach(cb => cb.onchange = () => {
     S.cfg.detector.classes = $$('#cfg-classes input:checked').map(x => x.value); markDirty();
   });
-  showVals(); renderCams(); markDirty();
+  showVals(); renderCreds(); renderCams(); markDirty();
 }
 function showVals() { $$('#tab-setup [data-show]').forEach(s => s.textContent = (+getK(S.cfg, s.dataset.show)).toFixed(2)); }
 
@@ -499,13 +500,16 @@ function renderCams() {
         if (k === 'name' && !c.orig_id && (!c.id || c.id === slug(c.name))) { c.id = slug(v); $('[data-ck=id]', el).value = c.id; }
         if (k === 'id') v = v.toLowerCase();
         c[k] = v;
-        if (k === 'brand') { renderCams(); markDirty(); return; }
+        if (k === 'credential') { c.credential = v || null; renderCreds(); renderCams(); markDirty(); return; }
+        if (k === 'brand') { c.port = S.brands[v]?.port ?? null; delete S.probe[i]; renderCams(); markDirty(); return; }
         if (['ring_seconds'].includes(k)) $('.ramest', el).innerHTML = ramEst(c, i);
         $('.cam-row', el).innerHTML = camSummary(c, i);
         markDirty();
       };
     });
     $$('[data-test]', el).forEach(b => b.onclick = () => testStream(i, b.dataset.test));
+    const sc = $('[data-savecred]', el);
+    if (sc) sc.onclick = () => saveAsLogin(c, sc);
     $('[data-remove]', el).onclick = () => {
       if (!confirmInline(el, c)) return;
     };
@@ -535,13 +539,11 @@ function camEditor(c, i) {
     <p class="small muted">Saved passwords are shown as ******** — leave them as-is to keep the stored password.</p>` : `
     <div class="fgrid">
       <label>IP address / hostname <input data-ck="host" value="${esc(c.host || '')}" placeholder="192.168.1.50" required></label>
-      <label>RTSP port <input type="number" data-ck="port" data-num value="${c.port ?? ''}" placeholder="${b.port}"></label>
+      <label>${b.scheme === 'rtsps' ? 'RTSPS' : 'RTSP'} port <input type="number" data-ck="port" data-num value="${c.port ?? ''}" placeholder="${b.port}"></label>
       <label>Channel <input type="number" min="1" data-ck="channel" data-num value="${c.channel ?? 1}">
         <span class="small muted">1 for standalone cameras; NVR/DVR channel otherwise</span></label>
-      <label>Username <input data-ck="username" value="${esc(c.username || '')}" placeholder="admin" autocomplete="off"></label>
-      <label>Password <input type="password" data-ck="password" value="" autocomplete="new-password"
-        placeholder="${c.has_password ? '•••••• stored — leave blank to keep' : ''}"></label>
-    </div>`;
+    </div>
+    ${loginFields(c)}`;
   const pr = S.probe[i] || {};
   return `<div class="cam-ed">
     <div class="fgrid">
@@ -551,9 +553,10 @@ function camEditor(c, i) {
       <label>Brand / connection <select data-ck="brand">${brandOpts}</select></label>
       <label class="row"><input type="checkbox" data-ck="enabled" ${c.enabled ? 'checked' : ''}> Enabled</label>
     </div>
+    ${b.note ? `<p class="small note">ℹ ${esc(b.note)}</p>` : ''}
     ${conn}
     <div class="row"><button type="button" data-test="main">Test main stream</button>
-      <button type="button" data-test="sub" ${c.brand === 'custom' && !c.sub_url ? 'disabled' : ''}>Test sub stream</button>
+      <button type="button" data-test="sub" ${!b.has_sub || (c.brand === 'custom' && !c.sub_url) ? 'disabled title="This camera has no sub stream"' : ''}>Test sub stream</button>
       <span class="small muted">Connects for ~4 s: checks resolution, bitrate and keyframe interval.</span></div>
     ${['main', 'sub'].map(s => pr[s] ? probeHtml(s, pr[s], c) : '').join('')}
     <div class="sub-h">Recording &amp; analysis</div>
@@ -570,6 +573,70 @@ function camEditor(c, i) {
   </div>`;
 }
 
+function loginFields(c) {
+  const creds = S.cfg.credentials || [];
+  const cred = creds.find(x => x.name === c.credential);
+  const opts = '<option value="">Enter manually</option>' + creds.map(x =>
+    `<option value="${esc(x.name)}" ${x.name === c.credential ? 'selected' : ''}>${esc(x.name)} (${esc(x.username || 'no username')})</option>`).join('');
+  const pick = creds.length ? `<label>Login <select data-ck="credential">${opts}</select></label>` : '';
+  if (cred) return `<div class="fgrid">${pick}
+    <div class="small muted login-info">Using saved login <b>${esc(cred.name)}</b> — username <b>${esc(cred.username || '—')}</b>,
+      ${cred.password || cred.has_password ? 'password stored' : '<span class="warn">no password</span>'}. Edit it under <b>Saved logins</b>.</div></div>`;
+  return `<div class="fgrid">${pick}
+    <label>Username <input data-ck="username" value="${esc(c.username || '')}" placeholder="admin" autocomplete="off"></label>
+    <label>Password <input type="password" data-ck="password" value="${esc(c.password || '')}" autocomplete="new-password"
+      placeholder="${c.has_password ? '•••••• stored — leave blank to keep' : ''}"></label>
+    <div class="login-info"><button type="button" data-savecred>Save as reusable login</button></div></div>`;
+}
+function saveAsLogin(c, btn) {
+  if (!c.username) { btn.textContent = 'Enter a username first'; setTimeout(() => btn.isConnected && (btn.textContent = 'Save as reusable login'), 2500); return; }
+  const base = `${(S.brands[c.brand]?.label || c.brand).split(/[ /]/)[0]} ${c.username}`;
+  let name = base, n = 2;
+  while (S.cfg.credentials.some(x => x.name === name)) name = `${base} ${n++}`;
+  // An existing camera's stored password never reaches the browser; the server copies it via from_camera.
+  S.cfg.credentials.push({ name, username: c.username, password: c.password || '',
+    has_password: !!c.password || !!c.has_password, ...(!c.password && c.orig_id ? { from_camera: c.orig_id } : {}) });
+  c.credential = name;
+  renderCreds(); renderCams(); markDirty();
+}
+function renderCreds() {
+  const list = S.cfg.credentials ||= [], box = $('#cfg-creds');
+  if (!list.length) { box.innerHTML = '<p class="muted small">No saved logins yet — add one here, or use <b>Save as reusable login</b> on a camera.</p>'; return; }
+  box.innerHTML = list.map((x, i) => {
+    const used = S.cfg.cameras.filter(c => c.credential === x.name);
+    return `<div class="fgrid cred" data-i="${i}">
+      <label>Name <input data-cr="name" value="${esc(x.name)}" maxlength="60" required></label>
+      <label>Username <input data-cr="username" value="${esc(x.username || '')}" autocomplete="off"></label>
+      <label>Password <input type="password" data-cr="password" value="${esc(x.password || '')}" autocomplete="new-password"
+        placeholder="${x.has_password ? '•••••• stored — leave blank to keep' : ''}"></label>
+      <div class="login-info row"><span class="small muted">${used.length ? 'Used by ' + used.map(c => esc(c.name || c.id)).join(', ') : 'Not used by any camera'}</span>
+        <button type="button" class="danger" data-crdel ${used.length ? 'disabled title="Switch those cameras to another login first"' : ''}>Remove</button></div>
+    </div>`;
+  }).join('');
+  $$('#cfg-creds .cred').forEach(el => {
+    const x = list[+el.dataset.i];
+    $$('[data-cr]', el).forEach(inp => inp.oninput = () => {
+      const k = inp.dataset.cr;
+      if (k === 'name') {
+        const v = inp.value.trim();
+        const clash = list.some(o => o !== x && o.name === v);
+        inp.setCustomValidity(clash ? 'Another saved login has this name' : '');
+        S.cfg.cameras.forEach(c => { if (c.credential === x.name) c.credential = v; });
+        x.name = v;
+      } else x[k] = inp.value;
+      renderCams(); markDirty();
+    });
+    $('[data-crdel]', el).onclick = () => { list.splice(+el.dataset.i, 1); renderCreds(); renderCams(); markDirty(); };
+  });
+}
+$('#cfg-add-cred').onclick = () => {
+  let n = S.cfg.credentials.length + 1;
+  while (S.cfg.credentials.some(x => x.name === `Login ${n}`)) n++;
+  S.cfg.credentials.push({ name: `Login ${n}`, username: '', password: '', has_password: false });
+  renderCreds(); markDirty();
+  $('#cfg-creds .cred:last-child [data-cr=username]')?.focus();
+};
+
 function probeHtml(stream, p, c) {
   if (p.pending) return `<div class="probe"><div class="muted">Testing ${stream} stream…</div></div>`;
   if (!p.ok) return `<div class="probe"><div class="err"><b>${stream} stream failed:</b> ${esc(p.error)}<br><span class="url">${esc(p.url || '')}</span>
@@ -577,7 +644,7 @@ function probeHtml(stream, p, c) {
   const warns = [];
   if (p.gop_seconds && p.gop_seconds > 2.5) warns.push(`Keyframe interval is ${p.gop_seconds}s — set it to 1–2 s on the camera (I-frame interval = frame rate) for tighter pre-roll and fresher plate reads.`);
   if (stream === 'sub' && p.width > 1280) warns.push('Sub stream is high-resolution; analysis will cost more CPU. 640×360–1280×720 is ideal.');
-  if (stream === 'main' && c.brand === 'custom' && !c.sub_url) warns.push('No sub stream: the main stream will be decoded for analysis (much more CPU).');
+  if (stream === 'main' && ((c.brand === 'custom' && !c.sub_url) || !S.brands[c.brand]?.has_sub)) warns.push('No sub stream: the main stream will be decoded for analysis (much more CPU).');
   if (p.codec === 'hevc') warns.push('H.265: recorded fine, but browser playback needs HEVC support (Chrome/Edge with hardware decode, Safari).');
   const loopMb = p.bitrate_kbps ? p.bitrate_kbps * 1000 / 8 * c.ring_seconds : null;
   return `<div class="probe">${p.snapshot ? `<img src="${p.snapshot}">` : '<div></div>'}
@@ -594,7 +661,7 @@ async function testStream(i, stream) {
   const c = S.cfg.cameras[i];
   S.probe[i] = { ...(S.probe[i] || {}), [stream]: { pending: true } }; renderCams();
   try {
-    S.probe[i][stream] = await api('/api/config/probe', { method: 'POST', body: { camera: c, stream } });
+    S.probe[i][stream] = await api('/api/config/probe', { method: 'POST', body: { camera: c, stream, credentials: S.cfg.credentials } });
   } catch (e) { S.probe[i][stream] = { ok: false, error: e.message }; }
   renderCams(); renderRam();
 }
@@ -638,7 +705,7 @@ $('#cfg-llm-refresh').onclick = loadLlmModels;
 
 $('#cfg-add-cam').onclick = () => {
   const n = S.cfg.cameras.length + 1;
-  S.cfg.cameras.push({ id: `camera_${n}`, name: `Camera ${n}`, brand: 'hikvision', host: '', port: null, username: 'admin', password: '',
+  S.cfg.cameras.push({ id: `camera_${n}`, name: `Camera ${n}`, brand: 'hikvision', host: '', port: null, username: 'admin', password: '', credential: null,
     channel: 1, main_url: '', sub_url: null, enabled: true, ring_seconds: 300, analyze_fps: 5, detect_fps: 3, always_detect: false });
   S.open = new Set([S.cfg.cameras.length - 1]); renderCams(); markDirty();
   $('#cfg-cams .cam:last-child [data-ck=name]')?.focus();
@@ -668,7 +735,8 @@ $('#cfg-save').onclick = async () => {
   finally { btn.disabled = false; btn.textContent = 'Save configuration'; }
 };
 function prettyErr(e) {
-  return e.replace(/^cameras\.(\d+)\.?/, (_, i) => `Camera “${S.cfg.cameras[+i]?.name || +i + 1}”: `).replace('Value error, ', '');
+  return e.replace(/^cameras\.(\d+)\.?/, (_, i) => `Camera “${S.cfg.cameras[+i]?.name || +i + 1}”: `)
+    .replace(/^credentials\.(\d+)\.?/, (_, i) => `Saved login “${S.cfg.credentials[+i]?.name || +i + 1}”: `).replace('Value error, ', '');
 }
 async function restartServer() {
   banner('info', 'Restarting… this page will reconnect automatically.');
