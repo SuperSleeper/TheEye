@@ -76,8 +76,10 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
     # ------------------------------------------------------------- cameras
     @app.get("/api/cameras")
     def cameras():
+        order = {c.id: i for i, c in enumerate(hub.cfg.cameras)}   # config order = display order
+        cams = sorted(hub.cams.values(), key=lambda c: order.get(c.id, len(order)))
         return [{"id": c.id, "name": c.cfg.name or c.id, "status": c.status, "ring": c.ring.stats,
-                 "ring_seconds": c.cfg.ring_seconds} for c in hub.cams.values()]
+                 "ring_seconds": c.cfg.ring_seconds} for c in cams]
 
     @app.get("/api/cameras/{cam_id}/snapshot.jpg")
     def snapshot(cam_id: str):

@@ -213,6 +213,22 @@ def register(app: FastAPI, hub, searcher, config_path: Path) -> None:
         log.info("config saved to %s (restart needed for: %s)", config_path, restart or "nothing")
         return {"saved": True, "restart_required": restart}
 
+    @app.put("/api/cameras/order")
+    def reorder(ids: list[str] = Body(..., embed=True)):
+        """Reorder cameras (e.g. dragged in Live view). Only the listed cameras move, taking the slots they
+        already occupy, so cameras the client didn't show (disabled ones) keep their place. No restarts."""
+        with lock:
+            cams = list(hub.cfg.cameras)
+            known = {c.id: c for c in cams}
+            ids = [i for i in dict.fromkeys(ids) if i in known]
+            slots = [n for n, c in enumerate(cams) if c.id in set(ids)]
+            for n, cid in zip(slots, ids):
+                cams[n] = known[cid]
+            new = hub.cfg.model_copy(update={"cameras": cams})
+            save_config(new, config_path)
+            hub.cfg = new
+        return {"order": [c.id for c in cams]}
+
     @app.post("/api/config/probe")
     async def probe(camera: dict = Body(...), stream: str = Body("main"), credentials: list = Body([])):
         cams = merge_secrets([camera], current_map())

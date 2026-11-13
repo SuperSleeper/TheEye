@@ -89,8 +89,8 @@ function initLive() {
   const grid = $('#live-grid');
   grid.innerHTML = cameras.length ? cameras.map(c => `
     <div class="tile" data-cam="${esc(c.id)}">
-      <div style="position:relative"><img alt=""><canvas></canvas><div class="tile-msg">Connecting…</div></div>
-      <div class="bar"><span class="name">${esc(c.name)}</span>
+      <div style="position:relative"><img alt="" draggable="false"><canvas></canvas><div class="tile-msg">Connecting…</div></div>
+      <div class="bar"><span class="grip" title="Drag to reorder">⠿</span><span class="name">${esc(c.name)}</span>
         <span class="badge st"></span><span class="badge recb hidden rec">REC</span>
         <span class="muted ring"></span>
         <button class="recnow">● Record 30s</button>
@@ -98,6 +98,7 @@ function initLive() {
     </div>`).join('') : '<p class="muted">No cameras configured — add them on the Setup tab.</p>';
   $$('.tile', grid).forEach(tile => {
     $('.cfg', tile).onclick = () => editCamera(tile.dataset.cam);
+    $('.grip', tile).onpointerdown = e => startTileDrag(e, tile, grid);
     pumpFrames(tile);
     $('.recnow', tile).onclick = async () => {
       await api('/api/events/manual', { method: 'POST', body: { camera_id: tile.dataset.cam, duration: 30 } });
@@ -137,6 +138,55 @@ function pumpFrames(tile) {
   img.onload = () => { tile.dataset.frames = '1'; next(150); };
   img.onerror = () => { tile.dataset.frames = '0'; next(2000); };
   next(0);
+}
+// Drag tiles by their grip to reorder. Pointer events (not HTML5 DnD) so it also works on touch screens.
+function startTileDrag(e, tile, grid) {
+  if (e.button > 0) return;
+  e.preventDefault();
+  const before = $$('.tile', grid).map(t => t.dataset.cam);
+  const r = tile.getBoundingClientRect();
+  const ghost = tile.cloneNode(true);
+  ghost.classList.add('drag-ghost');
+  Object.assign(ghost.style, { width: r.width + 'px', height: r.height + 'px', left: r.left + 'px', top: r.top + 'px' });
+  $('img', ghost).src = $('img', tile).src;
+  document.body.appendChild(ghost);
+  tile.classList.add('drag-src');
+  const dx = e.clientX - r.left, dy = e.clientY - r.top;
+  let scrollTimer = null;
+  const move = ev => {
+    ghost.style.left = ev.clientX - dx + 'px'; ghost.style.top = ev.clientY - dy + 'px';
+    // auto-scroll near the window edges
+    clearInterval(scrollTimer);
+    const edge = ev.clientY < 60 ? -12 : ev.clientY > innerHeight - 60 ? 12 : 0;
+    if (edge) scrollTimer = setInterval(() => scrollBy(0, edge), 16);
+    const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('#live-grid .tile');
+    if (!over || over === tile) return;
+    const o = over.getBoundingClientRect();
+    const after = ev.clientX > o.left + o.width / 2;      // tiles flow left→right, so split by x
+    grid.insertBefore(tile, after ? over.nextSibling : over);
+  };
+  const end = async () => {
+    removeEventListener('pointermove', move); removeEventListener('pointerup', end); removeEventListener('pointercancel', end);
+    clearInterval(scrollTimer);
+    ghost.remove(); tile.classList.remove('drag-src');
+    const order = $$('.tile', grid).map(t => t.dataset.cam);
+    if (order.join() === before.join()) return;
+    cameras.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id)); refreshCameraSelects();
+    try {
+      await api('/api/cameras/order', { method: 'PUT', body: { ids: order } });
+      // Setup reloads from the server unless it has unsaved edits; then reorder its copy so a later save keeps this order.
+      if (S.cfg && S.dirty) {
+        const pos = id => { const k = order.indexOf(id); return k < 0 ? Infinity : k; };
+        S.cfg.cameras.sort((a, b) => pos(a.orig_id || a.id) - pos(b.orig_id || b.id));
+        S.open = new Set(); S.probe = {};
+      }
+    }
+    catch (err) {           // put tiles back if the server didn't take it
+      before.forEach(id => grid.appendChild($(`.tile[data-cam="${CSS.escape(id)}"]`, grid)));
+      console.error('reorder failed', err);
+    }
+  };
+  addEventListener('pointermove', move); addEventListener('pointerup', end); addEventListener('pointercancel', end);
 }
 function friendlyCamError(err, state) {
   if (!err) return state === 'init' ? 'Connecting…' : 'No video yet';
