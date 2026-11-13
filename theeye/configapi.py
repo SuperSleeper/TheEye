@@ -19,7 +19,7 @@ import httpx
 from fastapi import Body, FastAPI, HTTPException
 from pydantic import ValidationError
 
-from .camera import RTSP_OPTS
+from .camera import stream_opts
 from .config import BRANDS, CameraConfig, Config, Credential, redact, resolve_credentials, save_config
 
 log = logging.getLogger("theeye.setup")
@@ -113,9 +113,8 @@ def _errors(e: ValidationError) -> list[str]:
 # ------------------------------------------------------------------ probe
 def probe_stream(url: str, seconds: float = 4.0) -> dict[str, Any]:
     """Connect, sample a few seconds of packets: codec, resolution, fps, bitrate, keyframe interval, snapshot."""
-    opts = RTSP_OPTS if url.startswith(("rtsp://", "rtsps://")) else {}
     t0 = time.time()
-    c = av.open(url, options=opts, timeout=(8.0, 8.0))
+    c = av.open(url, options=stream_opts(url), timeout=(8.0, 8.0))
     try:
         if not c.streams.video:
             raise RuntimeError("no video stream found")

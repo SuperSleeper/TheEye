@@ -29,9 +29,16 @@ RTSP_OPTS = {
 ANALYSIS_WIDTH = 640
 
 
+def stream_opts(url: str) -> dict:
+    if url.startswith("rtsps://"):
+        # Cameras (e.g. Wyze) use self-signed certs, and newer ffmpeg verifies by default, failing with
+        # "Peer certificate failed verification". Traffic stays encrypted; only the identity check is skipped.
+        return {**RTSP_OPTS, "tls_verify": "0"}
+    return dict(RTSP_OPTS) if url.startswith("rtsp://") else {}
+
+
 def _open(url: str) -> av.container.InputContainer:
-    opts = RTSP_OPTS if url.startswith(("rtsp://", "rtsps://")) else {}
-    return av.open(url, options=opts, timeout=(10.0, 10.0))
+    return av.open(url, options=stream_opts(url), timeout=(10.0, 10.0))
 
 
 class Camera:
