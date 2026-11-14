@@ -45,9 +45,16 @@ The first start downloads the YOLO, plate and CLIP weights (about 400 MB).
 ### Keeping credentials out of git
 
 `config.yaml` holds camera passwords and is git-ignored, along with its `.bak` backups and `data/`.
-As a second line of defence, hooks in `.githooks/` block any commit or push that adds a forbidden
-file, one of the real passwords from your `config.yaml`, a non-placeholder `password:` in a config
-file, or a URL with an embedded `user:password@`. Turn them on once per clone:
+As a second line of defence, hooks in `.githooks/` block any commit, commit message or push that adds:
+
+- a forbidden file (`config.yaml` and backups, `data/`, `.env`, private keys)
+- one of the real passwords from your `config.yaml`
+- personal details: your camera IPs/hostnames and non-generic camera names (from `config.yaml`),
+  your git email, your home folder path, or any real-looking email address
+- a non-placeholder `password:` in a config file, or a URL with an embedded `user:password@`
+
+Use sample data instead: `192.168.1.50`, `user:pass`, `change-me`, `someone@example.com`, `Driveway`.
+Turn the hooks on once per clone:
 
 ```bash
 git config core.hooksPath .githooks
