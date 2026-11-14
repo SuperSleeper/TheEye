@@ -404,6 +404,9 @@ $('#pl-close').onclick = () => $('#player').close();
 $('#player').addEventListener('close', () => $('#pl-video').pause());
 
 // ---------------------------------------------------------------- search
+// Every kind of object found in a recording, with its best certainty; the one that matched is highlighted.
+const tagChips = (tags, hit) => (tags || []).map(t =>
+  `<span class="chip${t.label === hit ? ' hit' : ''}">${esc(t.label)} ${Math.round(t.conf * 100)}%</span>`).join('');
 $('#search-form').onsubmit = async ev => {
   ev.preventDefault();
   const q = $('#search-q').value.trim(); if (!q) return;
@@ -418,19 +421,20 @@ $('#search-form').onsubmit = async ev => {
     if (f.zones?.length) parts.push(`zones=${f.zones.join(',')}`);
     if (f.start) parts.push(`from ${f.start}`); if (f.end) parts.push(`to ${f.end}`);
     if (f.hours?.length) parts.push(`hours=${f.hours.join(',')}`);
+    if (f.min_confidence) parts.push(`certainty ≥ ${Math.round(f.min_confidence * 100)}%`);
     if (f.visual) parts.push(`looks like “${f.visual}”`);
     $('#search-meta').innerHTML = `${esc(f.explanation || '')} — <code>${esc(r.target)}: ${esc(parts.join(' · ') || 'everything')}</code> · ${r.results.length} results · ${r.ms} ms`;
     $('#search-results').innerHTML = r.results.map(x => {
       if (x.kind === 'detection') return `
         <div class="card" data-ev="${x.event_id || ''}" data-seek="${x.seek ?? ''}">
           ${x.snapshot_path ? `<img loading="lazy" src="/media/${esc(x.snapshot_path)}">` : '<img>'}
-          <div class="body"><div class="title"><span>${esc(x.label)}</span><span class="muted">${x.score != null ? 'match ' + x.score.toFixed(2) : (x.confidence * 100).toFixed(0) + '%'}</span></div>
-          <div class="muted">${esc(camName(x.camera_id))} · ${fmtTime(x.first_ts)}</div>
-          <div class="chips">${x.plate ? `<span class="chip plate">${esc(x.plate)}</span>` : ''}${x.event_id ? '<span class="chip">▶ clip</span>' : '<span class="chip">no clip</span>'}</div></div></div>`;
+          <div class="body"><div class="title"><span>${esc(x.label)} ${(x.confidence * 100).toFixed(0)}%</span><span class="muted">${x.score != null ? 'look-alike ' + x.score.toFixed(2) : ''}</span></div>
+          <div class="muted">${esc(camName(x.camera_id))} · ${fmtTime(x.first_ts)}${x.event_id ? '' : ' · no clip'}</div>
+          <div class="chips">${tagChips(x.tags, x.label)}${x.plate ? `<span class="chip plate">${esc(x.plate)}</span>` : ''}</div></div></div>`;
       if (x.kind === 'event') return `
         <div class="card" data-ev="${x.id}">${x.snapshot_path ? `<img loading="lazy" src="/media/${esc(x.snapshot_path)}">` : '<img>'}
           <div class="body"><div class="title"><span>Event #${x.id}</span></div><div class="muted">${esc(camName(x.camera_id))} · ${fmtTime(x.start_ts)}</div>
-          <div class="chips">${x.labels.map(l => `<span class="chip">${esc(l)}</span>`).join('')}${x.plates.map(p => `<span class="chip plate">${esc(p)}</span>`).join('')}</div></div></div>`;
+          <div class="chips">${x.tags?.length ? tagChips(x.tags) : x.labels.map(l => `<span class="chip">${esc(l)}</span>`).join('')}${x.plates.map(p => `<span class="chip plate">${esc(p)}</span>`).join('')}</div></div></div>`;
       return `<div class="card"><div class="body"><div class="title">Motion · ${esc(camName(x.camera_id))}</div>
         <div class="muted">${fmtTime(x.start_ts)} · zone ${x.zone_id || 'full'} · ${fmtDur(x.end_ts ? x.end_ts - x.start_ts : null)}</div></div></div>`;
     }).join('') || '<p class="muted">Nothing found.</p>';

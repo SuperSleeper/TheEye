@@ -40,13 +40,15 @@ FILTER_SCHEMA = {
         "end": {"type": "string", "description": "ISO local datetime or empty"},
         "hours": {"type": "array", "items": {"type": "integer"},
                   "description": "restrict to these hours of day (0-23), e.g. night = [22,23,0,1,2,3,4,5]"},
+        "min_confidence": {"type": "number",
+                           "description": "minimum detection certainty 0-1 if the user asks for one, e.g. 'over 80%' = 0.8; else 0"},
         "visual": {"type": "string",
                    "description": "visual appearance to match, e.g. 'red pickup truck', 'man in a hoodie'; empty if none"},
         "limit": {"type": "integer"},
         "explanation": {"type": "string", "description": "one short sentence of how the query was interpreted"},
     },
-    "required": ["target", "cameras", "labels", "plate", "zones", "start", "end", "hours", "visual",
-                 "limit", "explanation"],
+    "required": ["target", "cameras", "labels", "plate", "zones", "start", "end", "hours", "min_confidence",
+                 "visual", "limit", "explanation"],
 }
 
 SYSTEM = """You translate a security-camera search question into a JSON filter for an NVR database.
@@ -58,6 +60,7 @@ Rules:
 - zones: zone names from the list if referenced.
 - start/end: resolve relative times ("yesterday", "last night", "this morning", "past 2 hours") against NOW. Use ISO format YYYY-MM-DDTHH:MM:SS. Empty if no time constraint.
 - hours: only for recurring time-of-day constraints without a specific date (e.g. "at night"). Otherwise [].
+- min_confidence: only when the user asks for a certainty/confidence level: "over 80% certainty" / "at least 80% sure" = 0.8, "very sure" / "high confidence" = 0.8, "certain" = 0.9. Otherwise 0.
 - visual: colours, clothing, vehicle type/make, carried items, actions — anything a picture would show beyond the label. Empty if none.
 - limit: default 50.
 - explanation: max 15 words.
@@ -65,6 +68,52 @@ Time examples (relative to NOW): "yesterday evening" = yesterday 17:00 to 23:59:
 NOW: {now} ({weekday})
 Cameras: {cameras}
 Zones: {zones}"""
+
+
+CERTAINTY = re.compile(
+    r"(?:with\s+)?(?:(?:over|above|more than|greater than|at least|min(?:imum)?|>=?)\s*(\d{1,3}(?:\.\d+)?)\s*%"
+    r"(?:\s*(?:certain(?:ty)?|confiden(?:ce|t)|sure|match))?"
+    r"|(\d{1,3}(?:\.\d+)?)\s*%\s*(?:\+\s*)?(?:certain(?:ty)?|confiden(?:ce|t)|sure)(?:\s+or\s+(?:more|higher|better))?)", re.I)
+
+
+CERTAINTY_WORDS = re.compile(r"certain|confiden|\bsure\b|%|percent", re.I)
+
+
+def _min_conf(f: dict) -> float:
+    try:
+        v = float(f.get("min_confidence") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if v > 1:                      # "80" -> 0.8
+        v /= 100
+    return min(max(v, 0.0), 0.99)
+
+
+def _apply_certainty(q: str, f: dict) -> dict:
+    """'over 80% certainty' etc. -> min_confidence 0.8 (deterministic; small models often miss it)."""
+    m = CERTAINTY.search(q)
+    if m:
+        f["min_confidence"] = float(m.group(1) or m.group(2)) / 100
+    elif not CERTAINTY_WORDS.search(q):
+        f["min_confidence"] = 0           # small models copy the prompt's example threshold into unrelated queries
+    f["min_confidence"] = _min_conf(f)
+    return f
+
+
+def _parse_when(v: str) -> Optional[float]:
+    """ISO datetime -> epoch. Repairs a shape small models produce, e.g. '2026-11-13T17:34:51T00:00:00'
+    (date + last time given)."""
+    try:
+        return dt.datetime.fromisoformat(v).timestamp()
+    except ValueError:
+        d = re.match(r"(\d{4}-\d{2}-\d{2})", v)
+        t = re.findall(r"[T ](\d{2}:\d{2}(?::\d{2})?)", v)
+        if not d:
+            return None
+        try:
+            return dt.datetime.fromisoformat(f"{d.group(1)}T{t[-1] if t else '00:00:00'}").timestamp()
+        except ValueError:
+            return None
 
 
 class Searcher:
@@ -115,12 +164,16 @@ class Searcher:
         f["zones"] = [z for z in (f.get("zones") or []) if mentioned(z)]
         if not TIME_WORDS.search(ql):
             f["start"], f["end"], f["hours"] = "", "", []
-        return f
+        return _apply_certainty(q, f)
 
     @staticmethod
     def _fallback(q: str, why: str) -> dict:
-        return {"target": "detections", "cameras": [], "labels": [], "plate": "", "zones": [], "start": "",
-                "end": "", "hours": [], "visual": q, "limit": 50, "explanation": why}
+        f = {"target": "detections", "cameras": [], "labels": [], "plate": "", "zones": [], "start": "",
+             "end": "", "hours": [], "min_confidence": 0, "visual": q, "limit": 50, "explanation": why}
+        f = _apply_certainty(q, f)
+        if f["min_confidence"]:                       # don't make "over 80% certainty" part of the look-alike text
+            f["visual"] = CERTAINTY.sub(" ", q).strip()
+        return f
 
     # ------------------------------------------------------------ execute
     def search(self, q: str) -> dict[str, Any]:
@@ -139,12 +192,10 @@ class Searcher:
     def _time_clauses(self, f: dict, col: str, where: list[str], args: list) -> None:
         for key, op in (("start", ">="), ("end", "<=")):
             v = (f.get(key) or "").strip()
-            if v:
-                try:
-                    where.append(f"{col} {op} ?")
-                    args.append(dt.datetime.fromisoformat(v).timestamp())
-                except ValueError:
-                    where.pop()
+            ts = _parse_when(v) if v else None
+            if ts is not None:
+                where.append(f"{col} {op} ?")
+                args.append(ts)
 
     def _cam_clause(self, f: dict, where: list[str], args: list, col: str = "camera_id") -> None:
         lookup = {k.lower(): k for k in self.cameras} | {v.lower(): k for k, v in self.cameras.items()}
@@ -171,6 +222,10 @@ class Searcher:
         if plate:
             where.append("plate GLOB ?")
             args.append(plate if "*" in plate or "?" in plate else f"*{plate}*")
+        minc = _min_conf(f)
+        if minc:
+            where.append("confidence >= ?")
+            args.append(minc)
         visual = (f.get("visual") or "").strip()
         limit = max(1, min(int(f.get("limit") or 50), 500))
         pool = 5000 if visual else limit * 4
@@ -199,14 +254,29 @@ class Searcher:
                     rows = [dict(r, score=round(s, 4)) for s, r in scored if s >= top - 0.06] + unscored
             except Exception:  # noqa: BLE001
                 log.exception("visual rerank failed")
-        out = []
-        for r in rows[:limit]:
+        # One card per recording: the best-ranked matching object represents it (thumbnail, seek point),
+        # and the card lists every kind of object found in that recording with its certainty.
+        out, seen_events = [], set()
+        for r in rows:
+            if len(out) >= limit:
+                break
+            if r["event_id"]:
+                if r["event_id"] in seen_events:
+                    continue
+                seen_events.add(r["event_id"])
             r.pop("embedding", None)
             r["bbox"] = jload(r["bbox"], [])
             r["zones"] = jload(r["zones"], [])
             r["kind"] = "detection"
+            r["tags"] = self._event_tags(r["event_id"]) if r["event_id"] else [{"label": r["label"], "conf": r["confidence"]}]
             out.append(r)
         return out
+
+    def _event_tags(self, eid: int) -> list[dict]:
+        return [{"label": t["label"], "conf": t["conf"]} for t in self.db.all(
+            "SELECT d.label, MAX(d.confidence) AS conf FROM event_links l JOIN detections d"
+            " ON d.id = l.ref_id AND l.kind = 'detection' WHERE l.event_id = ? GROUP BY d.label ORDER BY conf DESC",
+            (eid,))]
 
     def _events(self, f: dict) -> list[dict]:
         where, args = ["1=1"], []
@@ -219,6 +289,13 @@ class Searcher:
         if plate:
             where.append("plates LIKE ?")
             args.append(f"%{plate}%")
+        minc = _min_conf(f)
+        if minc:
+            labels = [l for l in (f.get("labels") or []) if l]
+            where.append("EXISTS (SELECT 1 FROM event_links l JOIN detections d ON d.id = l.ref_id AND l.kind = 'detection'"
+                         " WHERE l.event_id = events.id AND d.confidence >= ?"
+                         + (f" AND d.label IN ({','.join('?' * len(labels))})" if labels else "") + ")")
+            args += [minc] + labels
         limit = max(1, min(int(f.get("limit") or 50), 500))
         rows = self.db.all(f"SELECT * FROM events WHERE {' AND '.join(where)} ORDER BY start_ts DESC LIMIT ?",
                            args + [limit])
@@ -228,6 +305,7 @@ class Searcher:
         for r in rows:
             r["kind"] = "event"
             r["labels"], r["plates"] = jload(r["labels"], []), jload(r["plates"], [])
+            r["tags"] = self._event_tags(r["id"])
         return rows
 
     def _motion(self, f: dict) -> list[dict]:

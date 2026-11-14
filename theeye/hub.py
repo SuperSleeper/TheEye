@@ -313,6 +313,9 @@ class Hub:
         if t.db_id is None:
             return
         self.db.execute("INSERT INTO event_links VALUES(?,?,?)", (ev.id, "detection", t.db_id))
+        if t.label not in ev.labels:                    # tag the recording with everything found in it
+            ev.labels.add(t.label)
+            self._flush_event_meta(ev)
         self.db.execute("UPDATE detections SET event_id=COALESCE(event_id, ?) WHERE id=?", (ev.id, t.db_id))
 
     def _flush_event_meta(self, ev: OpenEvent) -> None:
