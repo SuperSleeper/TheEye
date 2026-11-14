@@ -4,3 +4,5 @@ config.yaml
 __pycache__/
 *.pt
 *.onnx
+config.yaml.*
+*.bak
