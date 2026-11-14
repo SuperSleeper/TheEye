@@ -166,3 +166,10 @@ body:has(.drag-ghost) { cursor: grabbing; user-select: none; }
 .pl-arrow:hover:not(:disabled) { opacity: 1; background: #000a; }
 .pl-arrow:disabled { opacity: .12; cursor: default; }
 .pl-arrow.left { left: 8px; } .pl-arrow.right { right: 8px; }
+
+/* live overlay toggles (header + full-window view) */
+.ov-toggles { display: flex; gap: 6px; }
+.ov-toggles[hidden] { display: none; }
+button.ov { font-size: 12px; padding: 4px 10px; border-radius: 999px; background: var(--panel2); border: 1px solid var(--line);
+  color: var(--muted); cursor: pointer; }
+button.ov[aria-pressed="true"] { color: var(--text); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--panel2)); }

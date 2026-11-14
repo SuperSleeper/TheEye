@@ -32,6 +32,7 @@ function showTab(name) {
   if (name !== 'live') { $('#live-grid').innerHTML = ''; closeFocus?.(); }
   ({ live: initLive, events: loadEvents, triggers: loadTriggers, zones: initZones, rules: initRules, setup: () => initSetup(), search: () => $('#search-q').focus() })[name]?.();
   location.hash = name;
+  $('#overlay-toggles').hidden = name !== 'live';       // overlays only exist on Live
 }
 $$('#tabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
 
@@ -56,6 +57,21 @@ async function loadStats() {
 }
 
 // ---------------------------------------------------------------- live
+// Which Live overlays to draw. Per-browser preference; storage may be unavailable (private mode etc.).
+const OV = (() => {
+  try { return { ai: true, zones: true, ...JSON.parse(localStorage.getItem('theeye.overlays') || '{}') }; }
+  catch { return { ai: true, zones: true }; }
+})();
+function syncOverlayButtons() {
+  $$('button[data-ov]').forEach(b => b.setAttribute('aria-pressed', String(!!OV[b.dataset.ov])));
+}
+$$('button[data-ov]').forEach(b => b.onclick = () => {
+  OV[b.dataset.ov] = !OV[b.dataset.ov];
+  try { localStorage.setItem('theeye.overlays', JSON.stringify(OV)); } catch { /* not persisted */ }
+  syncOverlayButtons();
+});
+syncOverlayButtons();
+
 function drawOverlay(cv, img, st, camId) {
   const w = cv.width = img.clientWidth, h = cv.height = img.clientHeight;
   const ctx = cv.getContext('2d');
@@ -64,7 +80,7 @@ function drawOverlay(cv, img, st, camId) {
   const ar = (img.naturalWidth || img.videoWidth || 16) / (img.naturalHeight || img.videoHeight || 9);
   let dw = w, dh = w / ar; if (dh > h) { dh = h; dw = h * ar; }
   const ox = (w - dw) / 2, oy = (h - dh) / 2;
-  for (const z of zonesCache.filter(z => z.camera_id === camId && z.enabled)) {
+  for (const z of OV.zones ? zonesCache.filter(z => z.camera_id === camId && z.enabled) : []) {
     const active = st.motion_zones.includes(z.id);
     ctx.beginPath();
     z.points.forEach(([x, y], i) => ctx[i ? 'lineTo' : 'moveTo'](ox + x * dw, oy + y * dh));
@@ -75,7 +91,7 @@ function drawOverlay(cv, img, st, camId) {
   }
   ctx.setLineDash([]);
   ctx.font = '12px system-ui';
-  for (const t of st.tracks) {
+  for (const t of OV.ai ? st.tracks : []) {
     const [x1, y1, x2, y2] = t.bbox;
     // Ignored by rules: parked (grey dashed) or never seen moving (grey dotted)
     const ignored = t.parked || t.confirmed === false, col = ignored ? '#9aa3ad' : '#ffcc00';
@@ -195,7 +211,7 @@ function startTileDrag(e, tile, grid) {
   addEventListener('pointermove', move); addEventListener('pointerup', end); addEventListener('pointercancel', end);
 }
 // ---- full-window live view: the camera's own H.264 at full resolution (+ audio), streamed as fMP4
-const F = { cam: null, boxes: true, timers: [], retry: 0 };
+const F = { cam: null, timers: [], retry: 0 };
 function openFocus(id) {
   const c = cameras.find(x => x.id === id), v = $('#focus-video');
   F.cam = id; F.retry = 0;
@@ -213,7 +229,7 @@ function openFocus(id) {
   }, 500));
   F.timers.push(setInterval(async () => {               // detection boxes / zones on top
     const cv = $('#focus-canvas');
-    if (!F.boxes || !v.videoWidth) { cv.getContext('2d').clearRect(0, 0, cv.width, cv.height); return; }
+    if (!(OV.ai || OV.zones) || !v.videoWidth) { cv.getContext('2d').clearRect(0, 0, cv.width, cv.height); return; }
     const s = await api(`/api/cameras/${encodeURIComponent(id)}/state`).catch(() => null);
     if (s && F.cam === id) drawOverlay(cv, v, s, id);
   }, 500));
@@ -302,8 +318,6 @@ function updateFocusMute() {
   v.ondblclick = closeFocus;
   $('#focus-close').onclick = closeFocus;
   $('#focus-mute').onclick = () => { v.muted = !v.muted; updateFocusMute(); };
-  $('#focus-boxes').onclick = e => { F.boxes = !F.boxes; e.currentTarget.classList.toggle('on', F.boxes); };
-  $('#focus-boxes').classList.add('on');
   $('#focus-fs').onclick = () => document.fullscreenElement ? document.exitFullscreen() : $('#focus').requestFullscreen().catch(() => {});
   addEventListener('keydown', e => { if (e.key === 'Escape' && F.cam && !document.fullscreenElement) closeFocus(); });
 })();

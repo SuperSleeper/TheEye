@@ -18,6 +18,10 @@
     <button data-tab="rules">Rules</button>
     <button data-tab="setup">Setup</button>
   </nav>
+  <div id="overlay-toggles" class="ov-toggles" role="group" aria-label="Live overlays">
+    <button type="button" class="ov" data-ov="ai" title="Show AI detection boxes">◫ AI</button>
+    <button type="button" class="ov" data-ov="zones" title="Show zone outlines">⬠ Zones</button>
+  </div>
   <div id="stats" class="muted"></div>
 </header>
 
@@ -240,7 +244,8 @@
   <div class="focus-bar">
     <b id="focus-name"></b><span id="focus-res" class="muted small"></span>
     <span class="spacer"></span>
-    <button type="button" id="focus-boxes" title="Show detection boxes and zones">▢ Boxes</button>
+    <button type="button" class="ov" data-ov="ai" title="Show AI detection boxes">◫ AI</button>
+    <button type="button" class="ov" data-ov="zones" title="Show zone outlines">⬠ Zones</button>
     <button type="button" id="focus-mute"></button>
     <button type="button" id="focus-fs" title="Full screen">⛶</button>
     <button type="button" id="focus-close" title="Close (Esc or double-click)">✕</button>
