@@ -706,6 +706,8 @@ function camEditor(c, i) {
       <label>AI frame rate (fps) <input type="number" min="0.5" max="15" step="0.5" data-ck="detect_fps" data-num value="${c.detect_fps}">
         <span class="small muted">frames/s sent to the detector while active</span></label>
       <label class="row"><input type="checkbox" data-ck="always_detect" ${c.always_detect ? 'checked' : ''}> Run AI continuously (not only on motion)</label>
+      <label class="row"><input type="checkbox" data-ck="record_audio" ${c.record_audio !== false ? 'checked' : ''}> Record audio
+        <span class="small muted">— check local laws; some places require consent to record conversations</span></label>
     </div>
     <div class="row"><button type="button" data-dup title="Copy this camera's settings into a new camera">⧉ Duplicate</button>
       <button type="button" class="danger" data-remove>Remove camera</button></div>
@@ -845,7 +847,8 @@ $('#cfg-llm-refresh').onclick = loadLlmModels;
 $('#cfg-add-cam').onclick = () => {
   const n = S.cfg.cameras.length + 1;
   S.cfg.cameras.push({ id: `camera_${n}`, name: `Camera ${n}`, brand: 'hikvision', host: '', port: null, username: 'admin', password: '', credential: null,
-    channel: 1, main_url: '', sub_url: null, enabled: true, ring_seconds: 300, analyze_fps: 5, detect_fps: 3, always_detect: false });
+    channel: 1, main_url: '', sub_url: null, enabled: true, ring_seconds: 300, analyze_fps: 5, detect_fps: 3, always_detect: false,
+    record_audio: true });
   S.open = new Set([S.cfg.cameras.length - 1]); renderCams(); markDirty();
   $('#cfg-cams .cam:last-child [data-ck=name]')?.focus();
 };

@@ -101,6 +101,7 @@ class CameraConfig(BaseModel):
     analyze_fps: float = 5.0           # frames/s pushed through motion analysis
     detect_fps: float = 3.0            # frames/s pushed to the object detector while active
     always_detect: bool = False        # run detector even without motion
+    record_audio: bool = True          # include the camera's audio track in clips
 
     @model_validator(mode="after")
     def _derive_urls(self) -> "CameraConfig":

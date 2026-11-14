@@ -10,6 +10,7 @@ import logging
 import queue
 import threading
 import time
+from fractions import Fraction
 from pathlib import Path
 from typing import Optional
 
@@ -58,6 +59,7 @@ class ClipWriter:
     def _run(self) -> None:
         tmpl = self.cam.template_stream
         out = None
+        audio = None
         try:
             if tmpl is None:
                 raise RuntimeError("camera has no main stream")
@@ -65,7 +67,9 @@ class ClipWriter:
             out = av.open(str(self.path), "w", format="mp4",
                           options={"movflags": "frag_keyframe+empty_moov+default_base_moof"})
             ost = out.add_stream_from_template(tmpl)
+            audio = _AudioTrack.create(out, self.cam.audio_template, self.cam.id)
             base: Optional[int] = None
+            base_s: Optional[float] = None      # first video packet's time, in seconds (audio aligns to it)
             last_dts: Optional[int] = None
             while True:
                 try:
@@ -80,6 +84,10 @@ class ClipWriter:
                     if now > self.stop_at:
                         break
                     continue
+                if p.audio:
+                    if audio is not None and base_s is not None and p.wall <= self.stop_at:
+                        self.bytes += audio.write(out, p, base_s)
+                    continue
                 if self.clip_start_wall is None:
                     if not p.keyframe:
                         continue
@@ -92,6 +100,7 @@ class ClipWriter:
                     continue
                 if base is None:
                     base = dts
+                    base_s = float(dts * p.time_base)
                 if last_dts is not None and dts - base <= last_dts:
                     continue                      # non-monotonic; mp4 muxer would reject
                 last_dts = dts - base
@@ -107,6 +116,11 @@ class ClipWriter:
             log.exception("[%s] clip write failed: %s", self.cam.id, self.path)
         finally:
             self.cam.ring.unsubscribe(self._feed)
+            if out is not None and audio is not None:
+                try:
+                    audio.flush(out)
+                except Exception:  # noqa: BLE001
+                    log.debug("[%s] audio flush failed", self.cam.id, exc_info=True)
             if out is not None:
                 try:
                     out.close()
@@ -114,6 +128,82 @@ class ClipWriter:
                     log.exception("closing clip failed")
             self.done.set()
             log.info("[%s] clip closed %s (%.1f MB)", self.cam.id, self.path.name, self.bytes / 1e6)
+
+
+class _AudioTrack:
+    """Audio in clips. AAC is stream-copied; anything else (Wyze Cam v3 sends G.711 A-law, which MP4 can't
+    hold) is decoded and re-encoded to AAC. Timestamps are aligned to the clip's first video packet using
+    the camera's own stream clock (RTSP keeps audio and video on a common timeline)."""
+
+    def __init__(self, ost, dec=None, enc_resampler=None):
+        self.ost, self.dec, self.resampler = ost, dec, enc_resampler
+        self.last_dts: Optional[int] = None
+        self.next_pts: Optional[int] = None   # transcode path: running sample position
+
+    @classmethod
+    def create(cls, out, tmpl, cam_id: str) -> Optional["_AudioTrack"]:
+        if tmpl is None:
+            return None
+        try:
+            name = tmpl.codec_context.name
+            if name == "aac":
+                return cls(out.add_stream_from_template(tmpl))
+            rate = tmpl.codec_context.sample_rate or 8000
+            dec = av.CodecContext.create(name, "r")
+            dec.sample_rate = rate
+            dec.layout = tmpl.codec_context.layout.name if tmpl.codec_context.layout else "mono"
+            ost = out.add_stream("aac", rate=rate)
+            ost.codec_context.layout = "mono"
+            ost.codec_context.bit_rate = 32000
+            ost.time_base = Fraction(1, rate)
+            res = av.AudioResampler(format="fltp", layout="mono", rate=rate,
+                                    frame_size=ost.codec_context.frame_size or 1024)
+            return cls(ost, dec, res)
+        except Exception:  # noqa: BLE001
+            log.warning("[%s] audio track unavailable; recording video only", cam_id, exc_info=True)
+            return None
+
+    def write(self, out, p: Pkt, base_s: float) -> int:
+        t = (p.pts if p.pts is not None else p.dts)
+        if t is None:
+            return 0
+        rel_s = float(t * p.time_base) - base_s
+        if rel_s < 0:
+            return 0                       # audio from before the clip's first video frame
+        if self.dec is None:               # AAC: copy
+            ts = int(round(rel_s / p.time_base))
+            if self.last_dts is not None and ts <= self.last_dts:
+                return 0
+            self.last_dts = ts
+            pkt = av.Packet(p.data)
+            pkt.pts = pkt.dts = ts
+            pkt.duration = p.duration
+            pkt.time_base = p.time_base
+            pkt.stream = self.ost
+            out.mux(pkt)
+            return len(p.data)
+        n = 0
+        rate = self.ost.codec_context.sample_rate
+        for fr in self.dec.decode(av.Packet(p.data)):
+            if self.next_pts is None:
+                self.next_pts = int(round(rel_s * rate))
+            for rf in self.resampler.resample(fr):
+                rf.pts, rf.time_base = self.next_pts, Fraction(1, rate)
+                self.next_pts += rf.samples
+                for ep in self.ost.encode(rf):
+                    out.mux(ep)
+                    n += ep.size
+        return n
+
+    def flush(self, out) -> None:
+        if self.dec is None:
+            return
+        for rf in self.resampler.resample(None):
+            rf.pts, rf.time_base = self.next_pts or 0, Fraction(1, self.ost.codec_context.sample_rate)
+            for ep in self.ost.encode(rf):
+                out.mux(ep)
+        for ep in self.ost.encode(None):
+            out.mux(ep)
 
 
 class RecordingManager:

@@ -59,6 +59,7 @@ class Camera:
         self.id = cfg.id
         self.ring = RingBuffer(cfg.ring_seconds, ring_bytes)
         self.template_stream: Optional[av.video.stream.VideoStream] = None  # for stream-copy muxing
+        self.audio_template = None       # camera's audio stream (AAC copied; others transcoded by the recorder)
         self.main_size: tuple[int, int] = (0, 0)
         self.latest_frame: Optional[np.ndarray] = None     # analysis-res BGR
         self.latest_frame_ts: float = 0.0
@@ -97,8 +98,10 @@ class Camera:
             try:
                 c = _open(self.cfg.main_url)
                 vs = c.streams.video[0]
+                aus = c.streams.audio[0] if (self.cfg.record_audio and c.streams.audio) else None
                 self.ring.reset()
                 self.template_stream = vs
+                self.audio_template = aus
                 self._main_container = c
                 self.main_size = (vs.codec_context.width, vs.codec_context.height)
                 self.status.update(main="live", main_err=None,
@@ -106,12 +109,16 @@ class Camera:
                 log.info("[%s] main stream up: %s", self.id, self.status["main_codec"])
                 backoff = 1.0
                 sampler = _Sampler(self.cfg.analyze_fps)
-                for pkt in c.demux(vs):
+                for pkt in c.demux(*([vs, aus] if aus is not None else [vs])):
                     if self._stop.is_set():
                         break
                     if pkt.size == 0:
                         continue
                     now = time.time()
+                    if aus is not None and pkt.stream is aus:
+                        self.ring.push(Pkt(bytes(pkt), pkt.pts, pkt.dts, pkt.duration or 0,
+                                           pkt.time_base, False, now, audio=True))
+                        continue
                     self.ring.push(Pkt(bytes(pkt), pkt.pts, pkt.dts, pkt.duration or 0,
                                        pkt.time_base, bool(pkt.is_keyframe), now))
                     if analyse_here:
@@ -217,6 +224,8 @@ class Camera:
             cc.thread_type = "AUTO"
             last = None
             for p in gop:
+                if p.audio:
+                    continue
                 for fr in cc.decode(av.Packet(p.data)):
                     last = fr
             for fr in cc.decode(None):

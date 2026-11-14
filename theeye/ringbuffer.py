@@ -22,6 +22,7 @@ class Pkt:
     time_base: Fraction
     keyframe: bool
     wall: float          # wall-clock time packet arrived (epoch seconds)
+    audio: bool = False  # audio packet interleaved with the video (never a keyframe; skipped by video decoders)
 
 
 class RingBuffer:
