@@ -42,6 +42,19 @@ python -m theeye -c config.yaml      # → http://localhost:8080
 
 The first start downloads the YOLO, plate and CLIP weights (about 400 MB).
 
+### Keeping credentials out of git
+
+`config.yaml` holds camera passwords and is git-ignored, along with its `.bak` backups and `data/`.
+As a second line of defence, hooks in `.githooks/` block any commit or push that adds a forbidden
+file, one of the real passwords from your `config.yaml`, a non-placeholder `password:` in a config
+file, or a URL with an embedded `user:password@`. Turn them on once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Check the whole history any time with `.githooks/check-secrets main`.
+
 ## Sizing (5–12 cameras on this box)
 
 * **RAM:** about 45 MB per minute per 4 MP camera at 6 Mbit/s. With 12 cameras on a 10-minute loop that's about 5.4 GB.
