@@ -22,6 +22,10 @@ from .motion import Zone
 log = logging.getLogger("theeye.detector")
 
 VEHICLES = {"car", "truck", "bus", "motorcycle"}
+# Things that legitimately sit still (parked vehicles, dropped bags). Shown and logged even when not moving,
+# but they still only trigger rules once seen moving. Anything else (people, animals) that is never seen
+# moving is treated as a misdetection and hidden entirely. COCO has no "package" class; bags are closest.
+STILL_OK = VEHICLES | {"bicycle", "suitcase", "backpack", "handbag"}
 TRACK_TTL = 3.0          # seconds unseen before a track is finalized
 PLATE_RETRY_MAX_S = 30.0          # slowest retry for a vehicle whose plate hasn't read confidently
 IOU_MATCH = 0.3
@@ -54,6 +58,8 @@ class Track:
     parked: bool = False             # hasn't moved for detector.stationary_seconds: rules ignore it
     seen_moving: bool = False        # motion seen inside its box at some point (sticky for the track)
     confirmed: bool = True           # counts for rules: seen moving, or motion confirmation is off
+    announced: bool = False          # reported to the hub (Live, DB, search); withheld until plausible
+    visible: bool = False            # currently shown/considered at all (see Detector._handle)
     db_id: Optional[int] = None
     hits: int = 0
 
@@ -124,7 +130,7 @@ class Detector:
         now = time.time()
         with self._tlock:
             tracks = list(self.tracks.get(cam, {}).values())
-        return [t for t in tracks if now - t.last_ts <= within]
+        return [t for t in tracks if t.visible and now - t.last_ts <= within]
 
     # ----------------------------------------------------------------- model
     def _load(self) -> None:
@@ -236,10 +242,8 @@ class Detector:
                 if self._was_parked_here(cam, label, nb, ts):   # reappeared in a known parked spot
                     best.still_since = ts - self.cfg.stationary_seconds
                 cam_tracks[best.key] = best
-                is_new = True
             else:
                 unmatched.discard(best.key)
-                is_new = False
             best.bbox, best.conf, best.last_ts, best.hits = nb, conf, ts, best.hits + 1
             if _iou(best.still_bbox, nb) < PARK_IOU:          # it moved: restart the stillness clock
                 best.still_bbox, best.still_since = nb, ts
@@ -260,8 +264,15 @@ class Detector:
                 best.last_plate_try = ts
                 best.plate_tries += 1
                 plate_jobs.append(best)
-            (new if is_new else upd).append(best)
-            seen.append(best)
+            # Shown only while plausible: things that are normally still (vehicles, bags) always; anything
+            # else (people, animals) only once seen moving and while not stationary - a "person" that never
+            # moves, or stops moving for stationary_seconds, is almost always a misread static object.
+            best.visible = (not self.cfg.require_motion or best.label in STILL_OK
+                            or (best.seen_moving and not best.parked))
+            if best.visible:
+                (upd if best.announced else new).append(best)
+                best.announced = True
+                seen.append(best)
         return new, upd, seen, plate_jobs
 
     def _was_parked_here(self, cam: str, label: str, bbox: list[float], ts: float) -> bool:
