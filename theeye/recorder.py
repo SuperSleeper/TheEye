@@ -6,6 +6,7 @@ write the same footage twice.
 """
 from __future__ import annotations
 
+import io
 import logging
 import queue
 import threading
@@ -36,15 +37,18 @@ class ClipWriter:
         self.bytes = 0
         self._q: queue.Queue[Optional[Pkt]] = queue.Queue(maxsize=5000)
         self._gen = cam.ring.generation
+        self._ready = threading.Event()        # live packets wait until history is queued (keeps order)
         history = cam.ring.snapshot_and_subscribe(start_wall, self._feed)
         for p in history:
             self._q.put(p)
+        self._ready.set()
         if history:
             self.clip_start_wall = history[0].wall
         self._t = threading.Thread(target=self._run, name=f"rec-{cam.id}", daemon=True)
         self._t.start()
 
     def _feed(self, p: Pkt) -> None:
+        self._ready.wait(2.0)
         try:
             self._q.put_nowait(p)
         except queue.Full:
@@ -171,13 +175,21 @@ class _AudioTrack:
         if rel_s < 0:
             return 0                       # audio from before the clip's first video frame
         if self.dec is None:               # AAC: copy
+            # Every AAC frame is 1024 samples. Cameras (Wyze Cam v4) often send no duration and jittery
+            # timestamps (40/80 ms apart for 64 ms frames); in fragmented MP4 the overlaps/gaps make the
+            # browser discard audio, so lay frames end to end, re-syncing only on a real gap (packet loss).
+            sr = self.ost.codec_context.sample_rate or 0
+            dur = p.duration or (int(round(1024 / sr / p.time_base)) if sr else 0)
             ts = int(round(rel_s / p.time_base))
+            if self.next_pts is not None and dur and abs(ts - self.next_pts) * p.time_base < 0.25:
+                ts = self.next_pts
             if self.last_dts is not None and ts <= self.last_dts:
                 return 0
             self.last_dts = ts
+            self.next_pts = ts + dur
             pkt = av.Packet(p.data)
             pkt.pts = pkt.dts = ts
-            pkt.duration = p.duration
+            pkt.duration = dur
             pkt.time_base = p.time_base
             pkt.stream = self.ost
             out.mux(pkt)
@@ -204,6 +216,136 @@ class _AudioTrack:
                 out.mux(ep)
         for ep in self.ost.encode(None):
             out.mux(ep)
+
+
+class _Sink(io.RawIOBase):
+    """File-like target for the MP4 muxer that just collects what it writes."""
+
+    def __init__(self):
+        super().__init__()
+        self._chunks: list[bytes] = []
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, b) -> int:
+        self._chunks.append(bytes(b))
+        return len(b)
+
+    def take(self) -> bytes:
+        out, self._chunks = b"".join(self._chunks), []
+        return out
+
+
+def mse_mime(video_stream, has_audio: bool, audio_profile: Optional[str] = None) -> str:
+    """MIME type with RFC 6381 codec strings, as MediaSource.addSourceBuffer() needs."""
+    cc = video_stream.codec_context
+    codecs = []
+    if cc.name == "h264":
+        ex = bytes(cc.extradata or b"")
+        sps = None
+        if ex[:1] == b"\x01" and len(ex) >= 4:                 # avcC: version, profile, compat, level
+            sps = ex[1:4]
+        else:                                                   # Annex B: find the SPS NAL (type 7)
+            for start in (b"\x00\x00\x00\x01", b"\x00\x00\x01"):
+                i = ex.find(start)
+                while i >= 0:
+                    j = i + len(start)
+                    if j + 3 < len(ex) and ex[j] & 0x1F == 7:
+                        sps = ex[j + 1:j + 4]
+                        break
+                    i = ex.find(start, j)
+                if sps:
+                    break
+        codecs.append("avc1." + (sps.hex() if sps and len(sps) == 3 else "42e01f"))
+    elif cc.name == "hevc":
+        codecs.append("hvc1.1.6.L120.90")
+    if has_audio:
+        codecs.append("mp4a.40.5" if (audio_profile or "").upper().startswith("HE") else "mp4a.40.2")
+    return f'video/mp4; codecs="{",".join(codecs)}"'
+
+
+class LiveMP4:
+    """Endless fragmented MP4 of a camera's full-resolution main stream (plus audio), for the full-window
+    live view. Packets come from the RAM loop, so it starts instantly at the latest keyframe, needs no
+    extra camera connection and no re-encoding (the browser decodes the camera's own H.264)."""
+
+    def __init__(self, cam: Camera, with_audio: bool = True):
+        self.cam = cam
+        self._q: queue.Queue[Pkt] = queue.Queue(maxsize=3000)
+        self._sink = _Sink()
+        self._gen = cam.ring.generation
+        self.finished = False
+        # 200 ms fragments: low latency without frag_every_frame, which writes single-sample audio
+        # fragments with a 0 duration (the browser then buffers almost no audio and playback stutters).
+        self.out = av.open(self._sink, "w", format="mp4",
+                           options={"movflags": "frag_keyframe+empty_moov+default_base_moof",
+                                    "frag_duration": "200000"})
+        self.ost = self.out.add_stream_from_template(cam.template_stream)
+        self.audio = _AudioTrack.create(self.out, cam.audio_template, cam.id) if with_audio else None
+        at = cam.audio_template
+        self.mime = mse_mime(cam.template_stream, self.audio is not None,
+                             at.codec_context.profile if (at is not None and at.codec_context.name == "aac") else None)
+        self.base: Optional[int] = None
+        self.base_s: Optional[float] = None
+        self.last_dts: Optional[int] = None
+        self._ready = threading.Event()
+        for p in cam.ring.snapshot_and_subscribe(time.time(), self._feed):   # latest GOP onward
+            self._put(p)
+        self._ready.set()
+
+    def _feed(self, p: Pkt) -> None:
+        self._ready.wait(2.0)
+        self._put(p)
+
+    def _put(self, p: Pkt) -> None:
+        try:
+            self._q.put_nowait(p)
+        except queue.Full:            # viewer can't keep up: end the stream (the page reconnects)
+            self.finished = True
+
+    def read(self, timeout: float = 1.0) -> Optional[bytes]:
+        """Mux what has arrived; returns new MP4 bytes (b"" if nothing yet) or None when the stream is over."""
+        if self.finished or self.cam.ring.generation != self._gen:
+            return None
+        try:
+            p = self._q.get(timeout=timeout)
+        except queue.Empty:
+            return b""
+        while p is not None:
+            self._mux(p)
+            try:
+                p = self._q.get_nowait()
+            except queue.Empty:
+                p = None
+        return self._sink.take()
+
+    def _mux(self, p: Pkt) -> None:
+        if p.audio:
+            if self.audio is not None and self.base_s is not None:
+                self.audio.write(self.out, p, self.base_s)
+            return
+        dts = p.dts if p.dts is not None else p.pts
+        pts = p.pts if p.pts is not None else dts
+        if dts is None or (self.base is None and not p.keyframe):
+            return
+        if self.base is None:
+            self.base, self.base_s = dts, float(dts * p.time_base)
+        if self.last_dts is not None and dts - self.base <= self.last_dts:
+            return
+        self.last_dts = dts - self.base
+        pkt = av.Packet(p.data)
+        pkt.pts, pkt.dts = pts - self.base, dts - self.base
+        pkt.duration, pkt.time_base, pkt.is_keyframe, pkt.stream = p.duration, p.time_base, p.keyframe, self.ost
+        self.out.mux(pkt)
+
+    def close(self) -> None:
+        self.finished = True
+        self.cam.ring.unsubscribe(self._feed)
+        try:
+            self.out.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 class RecordingManager:

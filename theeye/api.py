@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -88,6 +88,28 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         if not c.latest_jpeg:
             raise HTTPException(503, "no frame yet")
         return Response(c.latest_jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/cameras/{cam_id}/live.mp4")
+    async def live_mp4(cam_id: str, request: Request, audio: bool = True):
+        """Full-resolution live stream (H.264 copied, audio as AAC) for the full-window view."""
+        from .recorder import LiveMP4
+        c = cam_or_404(cam_id)
+        if c.template_stream is None or c.status.get("main") != "live":
+            raise HTTPException(503, "camera is not streaming")
+        ls = await asyncio.to_thread(LiveMP4, c, audio)
+
+        async def gen():
+            try:
+                while True:
+                    chunk = await asyncio.to_thread(ls.read, 1.0)
+                    if chunk is None or await request.is_disconnected():
+                        break
+                    if chunk:
+                        yield chunk
+            finally:
+                ls.close()
+        return StreamingResponse(gen(), media_type="video/mp4",
+                                 headers={"Cache-Control": "no-store", "X-Mime": ls.mime})
 
     @app.get("/api/cameras/{cam_id}/live.mjpg")
     async def live(cam_id: str):

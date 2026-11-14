@@ -231,6 +231,22 @@
   </section>
 </main>
 
+<div id="focus" class="focus hidden" aria-label="Full-window live view">
+  <div class="focus-stage">
+    <video id="focus-video" autoplay playsinline></video>
+    <canvas id="focus-canvas"></canvas>
+    <div id="focus-msg" class="tile-msg">Connecting…</div>
+  </div>
+  <div class="focus-bar">
+    <b id="focus-name"></b><span id="focus-res" class="muted small"></span>
+    <span class="spacer"></span>
+    <button type="button" id="focus-boxes" title="Show detection boxes and zones">▢ Boxes</button>
+    <button type="button" id="focus-mute"></button>
+    <button type="button" id="focus-fs" title="Full screen">⛶</button>
+    <button type="button" id="focus-close" title="Close (Esc or double-click)">✕</button>
+  </div>
+</div>
+
 <dialog id="player">
   <div class="player-head"><b id="pl-title"></b><button id="pl-close">✕</button></div>
   <video id="pl-video" controls playsinline></video>

@@ -29,7 +29,7 @@ function showTab(name) {
   $$('.tab').forEach(s => s.classList.toggle('active', s.id === `tab-${name}`));
   Object.values(timers).forEach(clearInterval);
   for (const k in timers) delete timers[k];
-  if (name !== 'live') $('#live-grid').innerHTML = '';   // close MJPEG connections
+  if (name !== 'live') { $('#live-grid').innerHTML = ''; closeFocus?.(); }
   ({ live: initLive, events: loadEvents, triggers: loadTriggers, zones: initZones, rules: initRules, setup: () => initSetup(), search: () => $('#search-q').focus() })[name]?.();
   location.hash = name;
 }
@@ -61,7 +61,7 @@ function drawOverlay(cv, img, st, camId) {
   const ctx = cv.getContext('2d');
   ctx.clearRect(0, 0, w, h);
   // object-fit: contain → compute drawn image rect
-  const ar = (img.naturalWidth || 16) / (img.naturalHeight || 9);
+  const ar = (img.naturalWidth || img.videoWidth || 16) / (img.naturalHeight || img.videoHeight || 9);
   let dw = w, dh = w / ar; if (dh > h) { dh = h; dw = h * ar; }
   const ox = (w - dw) / 2, oy = (h - dh) / 2;
   for (const z of zonesCache.filter(z => z.camera_id === camId && z.enabled)) {
@@ -102,6 +102,8 @@ function initLive() {
     </div>`).join('') : '<p class="muted">No cameras configured — add them on the Setup tab.</p>';
   $$('.tile', grid).forEach(tile => {
     $('.cfg', tile).onclick = () => editCamera(tile.dataset.cam);
+    tile.firstElementChild.ondblclick = () => openFocus(tile.dataset.cam);
+    tile.firstElementChild.title = 'Double-click for full-resolution view';
     $('.grip', tile).onpointerdown = e => startTileDrag(e, tile, grid);
     pumpFrames(tile);
     $('.recnow', tile).onclick = async () => {
@@ -136,7 +138,7 @@ function pumpFrames(tile) {
   const img = $('img', tile), url = `/api/cameras/${encodeURIComponent(tile.dataset.cam)}/snapshot.jpg`;
   const next = delay => setTimeout(() => {
     if (!tile.isConnected) return;
-    if (document.hidden) return next(1000);
+    if (document.hidden || F.cam) return next(1000);      // paused while a camera is full-window
     img.src = `${url}?t=${Date.now()}`;
   }, delay);
   img.onload = () => { tile.dataset.frames = '1'; next(150); };
@@ -192,6 +194,120 @@ function startTileDrag(e, tile, grid) {
   };
   addEventListener('pointermove', move); addEventListener('pointerup', end); addEventListener('pointercancel', end);
 }
+// ---- full-window live view: the camera's own H.264 at full resolution (+ audio), streamed as fMP4
+const F = { cam: null, boxes: true, timers: [], retry: 0 };
+function openFocus(id) {
+  const c = cameras.find(x => x.id === id), v = $('#focus-video');
+  F.cam = id; F.retry = 0;
+  $('#focus-name').textContent = c?.name || id; $('#focus-res').textContent = '';
+  $('#focus').classList.remove('hidden');
+  v.muted = false; updateFocusMute();
+  startFocusStream();
+  F.timers.push(setInterval(() => {                     // stay at the live edge; hop over small gaps
+    const b = v.buffered;
+    if (!b.length || v.seeking) return;
+    const end = b.end(b.length - 1);
+    let inside = false;
+    for (let i = 0; i < b.length; i++) if (v.currentTime >= b.start(i) && v.currentTime < b.end(i)) inside = true;
+    if (end - v.currentTime > 1.5 || !inside) v.currentTime = Math.max(b.start(b.length - 1), end - 0.3);
+  }, 500));
+  F.timers.push(setInterval(async () => {               // detection boxes / zones on top
+    const cv = $('#focus-canvas');
+    if (!F.boxes || !v.videoWidth) { cv.getContext('2d').clearRect(0, 0, cv.width, cv.height); return; }
+    const s = await api(`/api/cameras/${encodeURIComponent(id)}/state`).catch(() => null);
+    if (s && F.cam === id) drawOverlay(cv, v, s, id);
+  }, 500));
+}
+// Media Source Extensions: we fetch the endless fMP4 ourselves and feed it to the <video>. Plain
+// <video src=live.mp4> can't work out the timeline of a file with no end and stalls at 0:00.
+async function startFocusStream(withAudio = true) {
+  stopFocusStream();
+  const v = $('#focus-video'), msg = $('#focus-msg'), cam = F.cam;
+  const ctrl = new AbortController(); F.abort = ctrl;
+  msg.textContent = 'Connecting…'; msg.classList.remove('hidden');
+  const MS = window.ManagedMediaSource || window.MediaSource;   // ManagedMediaSource: iPad/iPhone Safari 17.1+
+  try {
+    if (!MS) throw new Error('This browser has no Media Source support');
+    const res = await fetch(`/api/cameras/${encodeURIComponent(cam)}/live.mp4?audio=${withAudio ? 1 : 0}`, { signal: ctrl.signal });
+    if (!res.ok) throw new Error(res.status === 503 ? 'Camera is not streaming right now' : `HTTP ${res.status}`);
+    const mime = res.headers.get('X-Mime') || 'video/mp4; codecs="avc1.42e01f"';
+    if (!MS.isTypeSupported(mime)) {
+      ctrl.abort();
+      if (withAudio && /mp4a/.test(mime)) return startFocusStream(false);     // try video only
+      throw new Error(`This browser can't play ${mime}`);
+    }
+    const ms = new MS(); F.ms = ms;
+    v.disableRemotePlayback = true;                                         // required by ManagedMediaSource
+    v.src = F.url = URL.createObjectURL(ms);
+    await new Promise(r => ms.addEventListener('sourceopen', r, { once: true }));
+    const sb = ms.addSourceBuffer(mime);
+    const pending = [];
+    const feed = () => {
+      if (sb.updating || !pending.length || ms.readyState !== 'open' || F.abort !== ctrl) return;
+      const b = v.buffered;                                                 // keep ~30 s in memory
+      if (b.length && v.currentTime - b.start(0) > 30) { sb.remove(b.start(0), v.currentTime - 10); return; }
+      const chunk = pending.shift();
+      try { sb.appendBuffer(chunk); }
+      catch (e) {
+        if (e.name !== 'QuotaExceededError') throw e;
+        pending.unshift(chunk);
+        if (b.length) sb.remove(b.start(0), Math.max(b.start(0) + 1, v.currentTime - 5));
+      }
+    };
+    sb.addEventListener('updateend', feed);
+    v.play().catch(() => { v.muted = true; updateFocusMute(); v.play().catch(() => {}); });   // autoplay policy
+    const reader = res.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done || F.abort !== ctrl) break;
+      pending.push(value); feed();
+    }
+    if (F.abort === ctrl) throw new Error('stream ended');
+  } catch (e) {
+    if (ctrl.signal.aborted && F.abort !== ctrl) return;                    // we closed it on purpose
+    if (F.abort === ctrl) focusReconnect(e.message);
+  }
+}
+function stopFocusStream() {
+  const v = $('#focus-video');
+  if (F.abort) { F.abort.abort(); F.abort = null; }
+  v.pause(); v.removeAttribute('src'); v.load();
+  if (F.url) { URL.revokeObjectURL(F.url); F.url = null; }
+  F.ms = null;
+}
+function focusReconnect(why) {                           // stream ended/failed: retry a few times
+  if (!F.cam) return;
+  const msg = $('#focus-msg'); msg.classList.remove('hidden');
+  if (++F.retry > 5) { msg.textContent = `Live stream unavailable — ${why || 'the camera may be offline'}.`; return; }
+  msg.textContent = 'Reconnecting…';
+  setTimeout(() => F.cam && startFocusStream(), 1500);
+}
+function closeFocus() {
+  if (!F.cam) return;
+  F.cam = null; F.timers.forEach(clearInterval); F.timers = [];
+  stopFocusStream();
+  $('#focus').classList.add('hidden');
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+}
+function updateFocusMute() {
+  const v = $('#focus-video'); $('#focus-mute').textContent = v.muted ? '🔇 Unmute' : '🔊 Mute';
+}
+(() => {
+  const v = $('#focus-video');
+  v.addEventListener('playing', () => {
+    F.retry = 0; $('#focus-msg').classList.add('hidden');
+    $('#focus-res').textContent = `${v.videoWidth}×${v.videoHeight}`;
+  });
+  v.addEventListener('error', () => { if (F.cam && v.getAttribute('src')) { stopFocusStream(); focusReconnect(v.error?.message); } });
+  v.ondblclick = closeFocus;
+  $('#focus-close').onclick = closeFocus;
+  $('#focus-mute').onclick = () => { v.muted = !v.muted; updateFocusMute(); };
+  $('#focus-boxes').onclick = e => { F.boxes = !F.boxes; e.currentTarget.classList.toggle('on', F.boxes); };
+  $('#focus-boxes').classList.add('on');
+  $('#focus-fs').onclick = () => document.fullscreenElement ? document.exitFullscreen() : $('#focus').requestFullscreen().catch(() => {});
+  addEventListener('keydown', e => { if (e.key === 'Escape' && F.cam && !document.fullscreenElement) closeFocus(); });
+})();
+
 function friendlyCamError(err, state) {
   if (!err) return state === 'init' ? 'Connecting…' : 'No video yet';
   if (/401|unauthori[sz]ed|authoriz/i.test(err)) return 'Login failed — check this camera\'s username/password (⚙ → Setup)';
