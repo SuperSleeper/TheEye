@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import math
 import shutil
 import threading
 import time
@@ -18,6 +19,7 @@ from typing import Optional
 
 import cv2
 import httpx
+import numpy as np
 
 from .camera import Camera
 from .config import Config
@@ -247,6 +249,8 @@ class Hub:
                 for ev in self._events_for(t.camera_id):
                     ev.plates.add(t.plate)
                     self._flush_event_meta(ev)
+        for row in self.db.all("SELECT event_id FROM event_links WHERE kind='detection' AND ref_id=?", (t.db_id,)):
+            self._event_thumb_from_track(row["event_id"], t)
 
     # ---------------------------------------------------------------- rules
     def cam_state(self, cam: str) -> CamState:
@@ -292,8 +296,8 @@ class Hub:
             clip_rel, offset = self.rec.acquire(cam, start, safe)
         snap = self._save_event_snapshot(cam, now)
         eid = self.db.insert(
-            "INSERT INTO events(camera_id,rule_id,source,start_ts,clip_path,clip_offset,snapshot_path,note)"
-            " VALUES(?,?,?,?,?,?,?,?)", (cam, rule_id, source, start, clip_rel, offset, snap, note))
+            "INSERT INTO events(camera_id,rule_id,source,start_ts,clip_path,clip_offset,snapshot_path,note,trigger_ts)"
+            " VALUES(?,?,?,?,?,?,?,?,?)", (cam, rule_id, source, start, clip_rel, offset, snap, note, now))
         ev = OpenEvent(eid, cam, rule_id, start, now, postroll, max_length, clip_rel)
         tid_rows = [tid for (c, _z), tid in self._open_triggers.items() if c == cam]
         for tid in tid_rows:
@@ -324,6 +328,11 @@ class Hub:
             return
         self.db.execute("UPDATE events SET end_ts=? WHERE id=?", (now, ev.id))
         self._flush_event_meta(ev)
+        if self.detector:
+            for t in self.detector.active_tracks(ev.camera_id):
+                if t.db_id and self.db.one("SELECT 1 FROM event_links WHERE event_id=? AND kind='detection'"
+                                           " AND ref_id=?", (ev.id, t.db_id)):
+                    self._event_thumb_from_track(ev.id, t)
         if ev.clip_rel:
             self.rec.release(ev.camera_id, ev.clip_rel, now)
         log.info("[%s] event %d closed (%.0fs)", ev.camera_id, ev.id, now - ev.start)
@@ -368,6 +377,35 @@ class Hub:
         p.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(p), c.latest_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
         return str(rel)
+
+    def _event_thumb_from_track(self, eid: int, t: Track) -> None:
+        """Replace the event's thumbnail with a crop centred on this object if it's the best view so far.
+
+        The trigger-time snapshot often shows an empty scene (object just entering). The track's best view
+        is re-decoded at full resolution from the RAM loop so the crop stays sharp; falls back to the
+        analysis-size frame if that moment has already left the loop.
+        """
+        if not t.best_bbox or t.best_frame is None:
+            return
+        x1, y1, x2, y2 = t.best_bbox
+        score = t.best_conf * math.sqrt(max(0.0, (x2 - x1) * (y2 - y1)))   # confident and large wins
+        row = self.db.one("SELECT thumb_score, snapshot_path FROM events WHERE id=?", (eid,))
+        if not row or score <= (row["thumb_score"] or 0):
+            return
+        cam = self.cams.get(t.camera_id)
+        frame = cam.decode_frame_at(t.best_ts) if cam and t.best_ts else None
+        img = object_thumb(frame if frame is not None else t.best_frame, t.best_bbox)
+        if img is None:
+            return
+        day = time.strftime("%Y-%m-%d", time.localtime(t.best_ts or time.time()))
+        rel = Path("snaps") / t.camera_id / day / f"evt_{eid}_obj_{int(time.time() * 1000)}.jpg"
+        p = self.data / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(p), img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        self.db.execute("UPDATE events SET snapshot_path=?, thumb_score=? WHERE id=?", (str(rel), score, eid))
+        old = row["snapshot_path"]
+        if old and old != str(rel) and Path(old).name.startswith("evt_"):   # only this event's own thumbnails
+            (self.data / old).unlink(missing_ok=True)
 
     def _webhook(self, url: str, ev: OpenEvent, name: str) -> None:
         payload = {"event_id": ev.id, "camera_id": ev.camera_id, "rule": name, "start_ts": ev.start}
@@ -415,3 +453,22 @@ class Hub:
 
 
 TRACK_GRACE = 3.0
+
+
+def object_thumb(frame: Optional[np.ndarray], bbox: list[float], out_w: int = 640, out_h: int = 360) -> Optional[np.ndarray]:
+    """16:9 crop centred on a normalized bbox: object fills ~40% of the width, shifted inward at frame edges."""
+    if frame is None or not bbox:
+        return None
+    H, W = frame.shape[:2]
+    x1, y1, x2, y2 = bbox[0] * W, bbox[1] * H, bbox[2] * W, bbox[3] * H
+    aspect = out_w / out_h
+    cw = max((x2 - x1) * 2.5, (y2 - y1) * 2.5 * aspect, W * 0.3)   # context around it; never zoom past 30% width
+    cw = min(cw, W, H * aspect)
+    ch = cw / aspect
+    left = min(max((x1 + x2) / 2 - cw / 2, 0), W - cw)
+    top = min(max((y1 + y2) / 2 - ch / 2, 0), H - ch)
+    crop = frame[int(top):int(top + ch), int(left):int(left + cw)]
+    if crop.size == 0:
+        return None
+    interp = cv2.INTER_AREA if crop.shape[1] > out_w else cv2.INTER_CUBIC
+    return cv2.resize(crop, (out_w, out_h), interpolation=interp)

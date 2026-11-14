@@ -107,6 +107,22 @@ class DB:
         self.lock = threading.RLock()
         with self.lock:
             self.conn.executescript(SCHEMA)
+            self._add_columns()
+
+    # Columns added after the first release. CREATE TABLE IF NOT EXISTS won't add them to existing DBs.
+    ADDED_COLUMNS = {
+        "events": {
+            "trigger_ts": "REAL",                         # when the rule fired (start_ts = trigger_ts - preroll)
+            "thumb_score": "REAL NOT NULL DEFAULT 0",     # quality of the object-centered thumbnail in use
+        },
+    }
+
+    def _add_columns(self) -> None:
+        for table, cols in self.ADDED_COLUMNS.items():
+            have = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            for name, decl in cols.items():
+                if name not in have:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
     def execute(self, sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
         with self.lock:

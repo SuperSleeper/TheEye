@@ -198,27 +198,33 @@ class Camera:
         with self._hd_lock:
             if self._hd_cache is not None and now - self._hd_cache[1] < max_age:
                 return self._hd_cache[0]
-            gop = self.ring.latest_gop()
-            ts = self.template_stream
-            if not gop or ts is None:
-                return None
-            try:
-                cc = av.CodecContext.create(ts.codec_context.name, "r")
-                if ts.codec_context.extradata:
-                    cc.extradata = ts.codec_context.extradata
-                cc.thread_type = "AUTO"
-                last = None
-                for p in gop:
-                    for fr in cc.decode(av.Packet(p.data)):
-                        last = fr
-                for fr in cc.decode(None):
+            img = self._decode_gop(self.ring.latest_gop())
+            self._hd_cache = (img, now)
+            return img
+
+    def decode_frame_at(self, wall: float) -> Optional[np.ndarray]:
+        """Full-resolution frame from the RAM loop as of wall-clock time `wall` (None if already evicted)."""
+        return self._decode_gop(self.ring.gop_until(wall))
+
+    def _decode_gop(self, gop: list) -> Optional[np.ndarray]:
+        ts = self.template_stream
+        if not gop or ts is None:
+            return None
+        try:
+            cc = av.CodecContext.create(ts.codec_context.name, "r")
+            if ts.codec_context.extradata:
+                cc.extradata = ts.codec_context.extradata
+            cc.thread_type = "AUTO"
+            last = None
+            for p in gop:
+                for fr in cc.decode(av.Packet(p.data)):
                     last = fr
-                img = last.to_ndarray(format="bgr24") if last is not None else None
-                self._hd_cache = (img, now)
-                return img
-            except Exception:  # noqa: BLE001
-                log.debug("[%s] main frame decode failed", self.id, exc_info=True)
-                return None
+            for fr in cc.decode(None):
+                last = fr
+            return last.to_ndarray(format="bgr24") if last is not None else None
+        except Exception:  # noqa: BLE001
+            log.debug("[%s] main frame decode failed", self.id, exc_info=True)
+            return None
 
     def wait_jpeg(self, last_ts: float, timeout: float = 2.0) -> tuple[Optional[bytes], float]:
         with self.frame_cond:

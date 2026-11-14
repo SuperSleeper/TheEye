@@ -66,7 +66,8 @@ def merge_secrets(cams: list[dict], current: dict[str, CameraConfig]) -> list[di
     out = []
     for c in cams:
         c = {k: v for k, v in c.items() if k != "has_password"}
-        old = current.get(c.get("orig_id") or c.get("id"))
+        src = c.pop("from_camera", None)       # duplicated in Setup: inherit the source camera's stored secrets
+        old = current.get(c.get("orig_id") or c.get("id")) or (current.get(src) if src else None)
         c.pop("orig_id", None)
         if old:
             if not c.get("password"):

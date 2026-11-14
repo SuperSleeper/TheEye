@@ -221,16 +221,24 @@ async function openEvent(id, seek) {
   const v = $('#pl-video');
   if (e.clip_path) {
     v.src = `/media/${e.clip_path}`;
-    v.onloadedmetadata = () => { v.currentTime = seek ?? e.clip_offset; v.play().catch(() => {}); };
+    v.onloadedmetadata = () => { v.currentTime = seek ?? e.play_from ?? e.clip_offset; v.play().catch(() => {}); };
   } else { v.removeAttribute('src'); v.load(); }
   $('#pl-info').innerHTML = `
-    ${e.clip_path ? '' : '<p class="muted">No clip (recording disabled, pruned, or still pending).</p>'}
+    ${e.clip_path ? `<div class="row small muted" style="gap:8px;margin-bottom:6px">
+        ${e.play_from > e.clip_offset + 0.5 ? `Starts where activity begins — ${(e.play_from - e.clip_offset).toFixed(0)} s of earlier footage before it.` : ''}
+        <button type="button" id="pl-pre">⏮ From pre-roll</button>
+        <button type="button" id="pl-act">▶ From activity</button></div>`
+      : '<p class="muted">No clip (recording disabled, pruned, or still pending).</p>'}
     <div><b>Detections</b> (click to jump)<br>${e.detections.map(d => `
       <span class="det" data-seek="${d.seek}">${d.snapshot_path ? `<img src="/media/${esc(d.snapshot_path)}">` : ''}
       ${esc(d.label)} ${(d.confidence * 100).toFixed(0)}%${d.plate ? ` <span class="chip plate">${esc(d.plate)}</span>` : ''}</span>`).join('') || '<span class="muted">none</span>'}</div>
     <div style="margin-top:6px"><b>Motion triggers</b>: ${e.motion.length} ${e.motion.map(m => `<span class="chip">zone ${m.zone_id || 'full'} · ${fmtDur(m.end_ts ? m.end_ts - m.start_ts : null)}</span>`).join(' ')}</div>
     <div style="margin-top:8px"><button id="pl-del" class="danger">Delete event</button></div>`;
   $$('#pl-info .det').forEach(d => d.onclick = () => { v.currentTime = +d.dataset.seek; v.play(); });
+  if ($('#pl-pre')) {
+    $('#pl-pre').onclick = () => { v.currentTime = e.clip_offset; v.play(); };
+    $('#pl-act').onclick = () => { v.currentTime = e.play_from ?? e.clip_offset; v.play(); };
+  }
   $('#pl-del').onclick = async () => { await api(`/api/events/${id}`, { method: 'DELETE' }); $('#player').close(); loadEvents(); };
   $('#player').showModal();
 }
@@ -612,10 +620,32 @@ function renderCams() {
     $$('[data-test]', el).forEach(b => b.onclick = () => testStream(i, b.dataset.test));
     const sc = $('[data-savecred]', el);
     if (sc) sc.onclick = () => saveAsLogin(c, sc);
+    $('[data-dup]', el).onclick = () => duplicateCamera(i);
     $('[data-remove]', el).onclick = () => {
       if (!confirmInline(el, c)) return;
     };
   });
+}
+function duplicateCamera(i) {
+  const src = S.cfg.cameras[i], copy = JSON.parse(JSON.stringify(src));
+  delete copy.orig_id;
+  let name = `${src.name || src.id} copy`, n = 2;
+  while (S.cfg.cameras.some(c => c.name === name)) name = `${src.name || src.id} copy ${n++}`;
+  let id = slug(name).slice(0, 40), k = 2;
+  while (S.cfg.cameras.some(c => c.id === id)) id = `${slug(name).slice(0, 36)}_${k++}`;
+  Object.assign(copy, { name, id });
+  // Stored passwords never reach the browser; for a saved camera the server copies them from the original.
+  if (src.orig_id && !copy.password) copy.from_camera = src.orig_id;
+  S.cfg.cameras.splice(i + 1, 0, copy);
+  const probe = {};                                   // test results are keyed by position: shift those below
+  for (const [k2, v] of Object.entries(S.probe)) probe[+k2 > i ? +k2 + 1 : k2] = v;
+  S.probe = probe;
+  S.open = new Set([i + 1]);
+  renderCreds(); renderCams(); markDirty();
+  const ed = $(`#cfg-cams .cam[data-i="${i + 1}"]`);
+  ed?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const host = $('[data-ck=host]', ed), nm = $('[data-ck=name]', ed);
+  (host || nm)?.focus(); (host || nm)?.select();
 }
 function confirmInline(el, c) {
   const b = $('[data-remove]', el);
@@ -671,7 +701,8 @@ function camEditor(c, i) {
         <span class="small muted">frames/s sent to the detector while active</span></label>
       <label class="row"><input type="checkbox" data-ck="always_detect" ${c.always_detect ? 'checked' : ''}> Run AI continuously (not only on motion)</label>
     </div>
-    <div class="row"><button type="button" class="danger" data-remove>Remove camera</button></div>
+    <div class="row"><button type="button" data-dup title="Copy this camera's settings into a new camera">⧉ Duplicate</button>
+      <button type="button" class="danger" data-remove>Remove camera</button></div>
   </div>`;
 }
 

@@ -84,6 +84,16 @@ class RingBuffer:
                 break
         return pk[start:]
 
+    def gop_until(self, wall: float) -> list[Pkt]:
+        """Packets from the last keyframe at/before `wall` through the packet arriving at `wall`."""
+        with self._lock:
+            pk = list(self._q)
+        end = next((i for i, p in enumerate(pk) if p.wall > wall), len(pk))
+        for i in range(end - 1, -1, -1):
+            if pk[i].keyframe:
+                return pk[i:max(end, i + 1)]
+        return []
+
     def latest_gop(self) -> list[Pkt]:
         with self._lock:
             pk = list(self._q)

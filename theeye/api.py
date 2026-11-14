@@ -182,6 +182,20 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         return {"ok": True}
 
     # -------------------------------------------------------------- events
+    def _play_lead_in(e: dict, dets: list[dict]) -> float:
+        """Seconds into the event's pre-roll where activity begins: the first motion/object that started
+        inside the clip window (things already in view before it, like parked cars, don't count), else the
+        moment the rule fired. Starts 1 s early for context."""
+        end = e["end_ts"] or time.time()
+        starts = [s for s in [m["start_ts"] for m in e["motion"]] + [d["first_ts"] for d in dets]
+                  if e["start_ts"] <= s <= end]
+        trig = e.get("trigger_ts")
+        if trig is None and e["rule_id"]:              # events from before trigger_ts was stored
+            trig = e["start_ts"] + ((db.one("SELECT preroll FROM rules WHERE id=?", (e["rule_id"],)) or {})
+                                    .get("preroll") or 0)
+        anchor = min(starts + ([trig] if trig else [])) if (starts or trig) else e["start_ts"]
+        return max(0.0, anchor - e["start_ts"] - 1.0)
+
     def _event_out(e: dict) -> dict:
         e["labels"], e["plates"] = jload(e["labels"], []), jload(e["plates"], [])
         e["rule_name"] = (db.one("SELECT name FROM rules WHERE id=?", (e["rule_id"],)) or {}).get("name") \
@@ -216,6 +230,7 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
             d["zones"] = jload(d["zones"], [])
             d["seek"] = max(0.0, e["clip_offset"] + d["first_ts"] - e["start_ts"])
         e["detections"] = dets
+        e["play_from"] = e["clip_offset"] + _play_lead_in(e, dets)
         return e
 
     @app.delete("/api/events/{eid}")

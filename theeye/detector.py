@@ -40,6 +40,7 @@ class Track:
     best_bbox: list[float] = field(default_factory=list)
     best_crop: Optional[np.ndarray] = None
     best_frame: Optional[np.ndarray] = None
+    best_ts: float = 0.0                  # when best_frame was seen (for full-res re-decode from the RAM loop)
     snapshot_dirty: bool = False
     plate: Optional[str] = None
     plate_conf: float = 0.0
@@ -223,6 +224,7 @@ class Detector:
                 best.best_conf, best.best_bbox = conf, nb
                 best.best_crop = _crop(img, nb, pad=0.15)
                 best.best_frame = img.copy()
+                best.best_ts = ts
                 best.snapshot_dirty = True
             # Each try decodes a full-res GOP, so back off (1,2,4..30 s) on plates that won't read, e.g. parked cars.
             if (self._alpr and label in VEHICLES and best.plate_conf < 0.9
