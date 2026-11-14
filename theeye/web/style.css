@@ -175,3 +175,30 @@ button.ov { font-size: 12px; padding: 4px 10px; border-radius: 999px; background
 button.ov[aria-pressed="true"] { color: var(--text); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--panel2)); }
 
 .chip.hit { box-shadow: inset 0 0 0 1px var(--accent); color: var(--text); background: color-mix(in srgb, var(--accent) 22%, transparent); }
+
+/* sound: tile meter */
+.tile .snd { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.tile .snd i { display: inline-block; width: 42px; height: 6px; border-radius: 3px; background: var(--panel2); overflow: hidden; }
+.tile .snd i b { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width .15s; }
+/* sound: history charts (small multiples, one per camera) */
+.snd-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; margin: 6px 0 8px; }
+.snd-head h3 { margin: 0; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; background: none; padding: 4px 10px; font-size: 12px; }
+.seg button[aria-pressed="true"] { background: var(--panel2); color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
+.snd-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr)); gap: 12px; margin-bottom: 18px; }
+.snd-card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; position: relative; }
+.snd-card .t { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
+.snd-card svg { display: block; width: 100%; height: 130px; margin-top: 4px; }
+.snd-card svg text { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.snd-card .grid line { stroke: var(--line); stroke-width: 1; }
+.snd-card .ln { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.snd-card .thr line { stroke: var(--text); stroke-opacity: .55; stroke-width: 1; stroke-dasharray: 4 3; }
+.snd-card .thr text { fill: var(--text); fill-opacity: .7; }
+.snd-card .xh { stroke: var(--muted); stroke-width: 1; }
+.snd-card .dot { fill: var(--accent); stroke: var(--panel); stroke-width: 2; }
+.snd-tip { position: absolute; pointer-events: none; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px;
+  padding: 4px 8px; font-size: 11px; white-space: nowrap; color: var(--text); transform: translate(-50%, -110%); }
+.snd-card details { margin-top: 6px; font-size: 12px; }
+.snd-card details table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+.snd-card details td { padding: 2px 4px; border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; }

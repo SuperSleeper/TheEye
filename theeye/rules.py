@@ -6,6 +6,7 @@ Condition types (JSON):
   {"type": "motion", "zone_id": 3}                  # motion trigger active in zone (null = any zone)
   {"type": "object", "labels": ["person"], "zone_id": null, "min_confidence": 0.5, "min_count": 1}
   {"type": "plate",  "pattern": "ABC*", "zone_id": null}   # glob, case-insensitive; "*" = any plate
+  {"type": "sound",  "min_db": -30, "min_seconds": 0.5}     # louder than min_db (dBFS) for min_seconds
 Manual / API / webhook events bypass rules.
 """
 from __future__ import annotations
@@ -62,6 +63,8 @@ class CamState:
     """Snapshot of live signals for one camera, used for evaluation."""
     motion_zones: set[int]               # active motion trigger zone ids
     tracks: list[dict]                   # active tracks (public dicts)
+    sound: list[tuple[float, float]] = field(default_factory=list)   # recent (time, dBFS) ~100 ms windows
+    now: float = 0.0
 
 
 def evaluate(rule: Rule, st: CamState) -> tuple[bool, list[str]]:
@@ -90,6 +93,15 @@ def evaluate(rule: Rule, st: CamState) -> tuple[bool, list[str]]:
                     and any(fnmatch.fnmatch(t["plate"], p) for p in pats)
                     and (zid in (None, "", "*") or int(zid) in t["zones"])]
             results.append((bool(hits), f"plate {','.join(hits)}" if hits else "plate"))
+        elif typ == "sound":
+            thr = float(c.get("min_db", -30))
+            need = max(0.1, float(c.get("min_seconds", 0.5)))
+            now = st.now or (st.sound[-1][0] if st.sound else 0.0)
+            win = [(ts, db) for ts, db in st.sound if ts >= now - need]
+            # loud for most of the span (tolerates a quiet blip), and the samples really cover the span
+            ok = (bool(win) and win[0][0] <= now - need + 0.25
+                  and sum(db >= thr for _, db in win) >= 0.7 * len(win))
+            results.append((ok, f"sound >= {thr:g} dB"))
         else:
             results.append((False, f"unknown:{typ}"))
     if not results:

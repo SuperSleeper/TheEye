@@ -113,6 +113,7 @@ function initLive() {
       <div class="bar"><span class="grip" title="Drag to reorder">⠿</span><span class="name">${esc(c.name)}</span>
         <span class="badge st"></span><span class="badge recb hidden rec">REC</span>
         <span class="muted ring"></span>
+        <span class="snd hidden" title="Sound level right now (dBFS)"><i><b></b></i><span></span></span>
         <button class="recnow">● Record 30s</button>
         <button class="cfg" title="Edit this camera in Setup">⚙</button></div>
     </div>`).join('') : '<p class="muted">No cameras configured — add them on the Setup tab.</p>';
@@ -139,6 +140,12 @@ function initLive() {
       msg.classList.toggle('hidden', live && tile.dataset.frames === '1');
       if (!live) msg.textContent = friendlyCamError(c.status.main_err, c.status.main);
       $('.ring', tile).textContent = `loop ${c.ring.seconds}s · ${(c.ring.bytes / 1e6).toFixed(0)} MB`;
+      const snd = $('.snd', tile);
+      snd.classList.toggle('hidden', c.sound_db == null);
+      if (c.sound_db != null) {
+        $('b', snd).style.width = `${Math.max(0, Math.min(100, (c.sound_db + 90) / 90 * 100))}%`;   // -90..0 dBFS
+        $(':scope > span', snd).textContent = `${Math.round(c.sound_db)} dB`;
+      }
       api(`/api/cameras/${encodeURIComponent(id)}/state`).then(s => {
         $('.recb', tile).classList.toggle('hidden', !s.recording);
         drawOverlay($('canvas', tile), $('img', tile), s, id);
@@ -458,12 +465,72 @@ $('#search-form').onsubmit = async ev => {
 
 // ---------------------------------------------------------------- triggers
 async function loadTriggers() {
+  loadSound().catch(e => console.error('sound levels', e));
   const cam = $('#tr-cam').value;
   const rows = await api(`/api/triggers?limit=500${cam ? '&camera_id=' + encodeURIComponent(cam) : ''}`);
   $('#tr-body').innerHTML = rows.map(r => `<tr><td>${esc(camName(r.camera_id))}</td><td>${esc(r.zone_name || (r.zone_id ? '#' + r.zone_id : 'Full frame'))}</td>
     <td>${fmtTime(r.start_ts)}</td><td>${fmtDur(r.end_ts ? r.end_ts - r.start_ts : null)}</td><td>${(r.peak_area * 100).toFixed(1)}%</td></tr>`).join('');
 }
 $('#tr-refresh').onclick = loadTriggers; $('#tr-cam').onchange = loadTriggers;
+
+// ---- sound levels: one small chart per camera (single series each, shared -70..0 dB scale)
+const SND = (() => { try { return { hours: +localStorage.getItem('theeye.soundHours') || 6 }; } catch { return { hours: 6 }; } })();
+$$('#snd-range button').forEach(b => b.onclick = () => {
+  SND.hours = +b.dataset.h;
+  try { localStorage.setItem('theeye.soundHours', SND.hours); } catch { /* not persisted */ }
+  loadSound();
+});
+async function loadSound() {
+  $$('#snd-range button').forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.h === SND.hours)));
+  const camSel = $('#tr-cam').value;
+  const [data, rules] = await Promise.all([api(`/api/sound?hours=${SND.hours}`), api('/api/rules').catch(() => [])]);
+  const cams = cameras.filter(c => (!camSel || c.id === camSel) && (data.cameras[c.id] || c.has_audio));
+  $('#snd-charts').innerHTML = cams.length ? cams.map(c => `<div class="snd-card" data-cam="${esc(c.id)}"></div>`).join('')
+    : '<p class="muted small">No sound data yet — cameras with a microphone appear here within a minute.</p>';
+  for (const c of cams) {
+    const thr = rules.filter(r => r.enabled && (r.camera_id === '*' || r.camera_id === c.id))
+      .flatMap(r => r.conditions.filter(k => k.type === 'sound').map(k => ({ db: k.min_db ?? -30, name: r.name })));
+    drawSoundChart($(`#snd-charts .snd-card[data-cam="${CSS.escape(c.id)}"]`), c, data.cameras[c.id] || [], thr, data);
+  }
+}
+function drawSoundChart(card, cam, pts, thr, data) {
+  const W = Math.max(280, card.clientWidth - 24), H = 130, L = 30, R = 6, T = 6, B = 18;
+  const t0 = data.since, t1 = Date.now() / 1000, lo = -90, hi = 0;   // Cam v4 silence sits near -87
+  const x = t => L + (t - t0) / (t1 - t0) * (W - L - R), y = db => T + (hi - Math.max(lo, Math.min(hi, db))) / (hi - lo) * (H - T - B);
+  let d = '', prev = null;                                  // break the line where the camera sent nothing
+  for (const [t, peak] of pts) { d += `${prev == null || t - prev > data.bucket * 2.5 ? 'M' : 'L'}${x(t).toFixed(1)},${y(peak).toFixed(1)}`; prev = t; }
+  const span = t1 - t0, step = [600, 1800, 3600, 3 * 3600, 6 * 3600, 86400].find(s => span / s <= 6) || 86400;
+  const xt = []; for (let t = Math.ceil(t0 / step) * step; t < t1; t += step) xt.push(t);
+  const fmtX = t => { const dt = new Date(t * 1000); return step >= 86400 ? dt.toLocaleDateString([], { month: 'short', day: 'numeric' }) : dt.toLocaleTimeString([], { hour: 'numeric', minute: step < 3600 ? '2-digit' : undefined }); };
+  const now = pts.length ? pts[pts.length - 1] : null;
+  const loudest = [...pts].sort((a, b) => b[1] - a[1]).slice(0, 8);
+  card.innerHTML = `<div class="t"><b>${esc(cam.name)}</b><span class="muted small">${cam.sound_db != null ? `now ${Math.round(cam.sound_db)} dB` : (pts.length ? '' : 'no audio')}</span></div>
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(cam.name)} sound level, last ${SND.hours} hours">
+      <g class="grid">${[-80, -60, -40, -20, 0].map(v => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 4}" y="${y(v) + 3}" text-anchor="end">${v}</text>`).join('')}</g>
+      ${xt.map(t => `<text x="${x(t)}" y="${H - 4}" text-anchor="middle">${esc(fmtX(t))}</text>`).join('')}
+      <g class="thr">${thr.map(k => `<line x1="${L}" x2="${W - R}" y1="${y(k.db)}" y2="${y(k.db)}"/><text x="${W - R}" y="${y(k.db) - 3}" text-anchor="end">${esc(k.name)} ≥ ${k.db} dB</text>`).join('')}</g>
+      <path class="ln" d="${d}"/>
+      <line class="xh hidden" y1="${T}" y2="${H - B}"/><circle class="dot hidden" r="4"/>
+      <rect x="${L}" y="0" width="${W - L - R}" height="${H}" fill="transparent"/>
+    </svg><div class="snd-tip hidden"></div>
+    <details><summary class="muted">Loudest moments</summary>${loudest.length ? `<table>${loudest.map(([t, p, a]) =>
+      `<tr><td>${esc(fmtTime(t))}</td><td>peak ${p} dB</td><td class="muted">avg ${a} dB</td></tr>`).join('')}</table>` : '<p class="muted">No data yet.</p>'}</details>`;
+  const svg = $('svg', card), tip = $('.snd-tip', card), xh = $('.xh', svg), dot = $('.dot', svg);
+  svg.onpointermove = e => {                                // crosshair + tooltip on the nearest point
+    if (!pts.length) return;
+    const r = svg.getBoundingClientRect(), px = (e.clientX - r.left) * W / r.width;
+    const t = t0 + (px - L) / (W - L - R) * (t1 - t0);
+    let best = pts[0]; for (const p of pts) if (Math.abs(p[0] - t) < Math.abs(best[0] - t)) best = p;
+    const bx = x(best[0]), by = y(best[1]);
+    xh.setAttribute('x1', bx); xh.setAttribute('x2', bx); dot.setAttribute('cx', bx); dot.setAttribute('cy', by);
+    xh.classList.remove('hidden'); dot.classList.remove('hidden'); tip.classList.remove('hidden');
+    tip.innerHTML = `${esc(fmtTime(best[0]))}<br><b>peak ${best[1]} dB</b> <span class="muted">· avg ${best[2]} dB</span>`;
+    const tx = 12 + bx * r.width / W, flip = tx > card.clientWidth * 0.6;   // keep the tooltip inside the card
+    tip.style.left = `${tx}px`; tip.style.top = `${30 + by * r.height / H}px`;
+    tip.style.transform = flip ? 'translate(calc(-100% - 10px), -50%)' : 'translate(10px, -50%)';
+  };
+  svg.onpointerleave = () => { xh.classList.add('hidden'); dot.classList.add('hidden'); tip.classList.add('hidden'); };
+}
 
 // ---------------------------------------------------------------- zones
 const Z = { cam: null, zones: [], sel: null, draft: null, drag: null, active: [] };
@@ -657,7 +724,10 @@ function renderConds() {
       min conf <input type="number" step="0.05" min="0" max="1" data-k="min_confidence" value="${c.min_confidence ?? 0.5}" style="width:70px">
       count ≥ <input type="number" min="1" data-k="min_count" value="${c.min_count ?? 1}" style="width:60px">`;
     if (c.type === 'plate') body = `<input type="text" data-k="pattern" placeholder="ABC* , *123 (glob)" value="${esc(c.pattern || '')}">`;
-    return `<div class="cond" data-i="${i}"><b>${c.type}</b>${body}<select data-k="zone_id">${zoneOptions(c.zone_id)}</select>
+    if (c.type === 'sound') body = `louder than <input type="number" step="1" min="-80" max="0" data-k="min_db" value="${c.min_db ?? -30}" style="width:70px"> dB
+      for <input type="number" step="0.1" min="0.1" max="60" data-k="min_seconds" value="${c.min_seconds ?? 0.5}" style="width:64px"> s
+      <span class="muted small">— see Motion log → Sound levels for each camera's normal level</span>`;
+    return `<div class="cond" data-i="${i}"><b>${c.type}</b>${body}${c.type === 'sound' ? '' : `<select data-k="zone_id">${zoneOptions(c.zone_id)}</select>`}
       <button type="button" class="danger" data-del>✕</button></div>`;
   }).join('') || '<p class="muted small">Add at least one condition.</p>';
   $$('#rl-conds .cond').forEach(el => {
@@ -665,6 +735,7 @@ function renderConds() {
     el.oninput = el.onchange = () => {
       if (c.type === 'object') { c.labels = $$('input[data-k=labels]:checked', el).map(x => x.value); c.min_confidence = +$('[data-k=min_confidence]', el).value; c.min_count = +$('[data-k=min_count]', el).value; }
       if (c.type === 'plate') c.pattern = $('[data-k=pattern]', el).value.toUpperCase();
+      if (c.type === 'sound') { c.min_db = +$('[data-k=min_db]', el).value; c.min_seconds = +$('[data-k=min_seconds]', el).value; return; }
       const z = $('[data-k=zone_id]', el).value; c.zone_id = z ? +z : null;
     };
     $('[data-del]', el).onclick = () => { R.sel.conditions.splice(+el.dataset.i, 1); renderConds(); };
@@ -673,7 +744,8 @@ function renderConds() {
 $$('[data-add]').forEach(b => b.onclick = () => {
   const t = b.dataset.add;
   R.sel.conditions.push(t === 'object' ? { type: t, labels: ['person'], zone_id: null, min_confidence: 0.5, min_count: 1 }
-    : t === 'plate' ? { type: t, pattern: '*', zone_id: null } : { type: t, zone_id: null });
+    : t === 'plate' ? { type: t, pattern: '*', zone_id: null }
+    : t === 'sound' ? { type: t, min_db: -30, min_seconds: 0.5 } : { type: t, zone_id: null });
   renderConds();
 });
 $('#rl-form').elements.camera_id.onchange = renderConds;

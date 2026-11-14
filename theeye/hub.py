@@ -13,6 +13,7 @@ import math
 import shutil
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -68,6 +69,9 @@ class Hub:
             self.detector.on_track_end = self._track_end
             self.detector.on_frame_tracks = lambda cam, ts, tr: self._evaluate(cam)
         self._lock = threading.RLock()
+        self._sound_lock = threading.Lock()
+        self._sound: dict[str, deque] = {}                 # cam -> recent (ts, dBFS)
+        self._sound_bucket: dict[str, list] = {}           # cam -> [bucket start, peak, power sum, n]
         self._open_triggers: dict[tuple[str, int], int] = {}
         self._open_events: dict[tuple[str, Optional[int]], OpenEvent] = {}
         self._manual_seq = 0
@@ -83,6 +87,7 @@ class Hub:
     def start(self) -> None:
         for cam in self.cams.values():
             cam.on_frame(self._on_frame)
+            cam.on_audio(self._on_audio)
             cam.start()
         if self.detector:
             self.detector.start()
@@ -129,6 +134,7 @@ class Hub:
             if cid not in self.cams:
                 cam = Camera(ccfg, per_cam)
                 cam.on_frame(self._on_frame)
+                cam.on_audio(self._on_audio)
                 self.cams[cid] = cam
                 if not self._stop.is_set():
                     cam.start()
@@ -256,7 +262,26 @@ class Hub:
     # ---------------------------------------------------------------- rules
     def cam_state(self, cam: str) -> CamState:
         tracks = [t.public() for t in self.detector.active_tracks(cam)] if self.detector else []
-        return CamState(self.motion.active_zones(cam), tracks)
+        with self._sound_lock:
+            sound = list(self._sound.get(cam, ()))
+        return CamState(self.motion.active_zones(cam), tracks, sound, time.time())
+
+    # ---------------------------------------------------------------- sound
+    SOUND_BUCKET_S = 10.0
+
+    def _on_audio(self, cam: str, db: float, ts: float) -> None:
+        """~10x/s per camera from its stream thread: keep a minute for rules, log 10 s buckets."""
+        with self._sound_lock:
+            self._sound.setdefault(cam, deque(maxlen=600)).append((ts, db))
+            b = self._sound_bucket.get(cam)
+            if b is None or ts - b[0] >= self.SOUND_BUCKET_S:
+                if b is not None and b[3]:
+                    self.db.execute("INSERT INTO sound_levels(camera_id, ts, peak_db, avg_db) VALUES(?,?,?,?)",
+                                    (cam, b[0], round(b[1], 1), round(10 * math.log10(b[2] / b[3] + 1e-12), 1)))
+                b = self._sound_bucket[cam] = [ts - ts % self.SOUND_BUCKET_S, -90.0, 0.0, 0]
+            b[1] = max(b[1], db)
+            b[2] += 10 ** (db / 10)          # average power, not average dB
+            b[3] += 1
 
     def _evaluate(self, cam: str) -> None:
         st = self.cam_state(cam)
@@ -441,6 +466,7 @@ class Hub:
                     log.info("retention: deleted %s", rel)
                 cutoff = time.time() - 30 * 86400
                 self.db.execute("DELETE FROM motion_triggers WHERE start_ts < ?", (cutoff,))
+                self.db.execute("DELETE FROM sound_levels WHERE ts < ?", (time.time() - 7 * 86400,))
                 free = shutil.disk_usage(self.data).free
                 if free < 5e9:
                     log.warning("low disk space: %.1f GB free", free / 1e9)

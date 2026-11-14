@@ -6,6 +6,7 @@ sub stream   -> decode -> sampled BGR frames -> analysis callbacks (motion/detec
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from typing import Callable, Optional
@@ -64,6 +65,11 @@ class Camera:
         self.latest_frame: Optional[np.ndarray] = None     # analysis-res BGR
         self.latest_frame_ts: float = 0.0
         self.latest_jpeg: Optional[bytes] = None
+        self.sound_db: Optional[float] = None    # loudness of the last ~100 ms, dBFS (0 = full scale)
+        self.sound_ts: float = 0.0
+        self.has_audio = False
+        self._audio_cbs: list[Callable[[str, float, float], None]] = []
+        self._sq, self._ns = 0.0, 0                # running sum of squares / sample count for the meter
         self.frame_cond = threading.Condition()
         self._frame_cbs: list[Callable[[str, np.ndarray, float], None]] = []
         self._stop = threading.Event()
@@ -76,6 +82,10 @@ class Camera:
 
     def on_frame(self, cb: Callable[[str, np.ndarray, float], None]) -> None:
         self._frame_cbs.append(cb)
+
+    def on_audio(self, cb: Callable[[str, float, float], None]) -> None:
+        """cb(camera_id, level_dbfs, wall_time) about every 100 ms while the camera sends audio."""
+        self._audio_cbs.append(cb)
 
     def start(self) -> None:
         t = threading.Thread(target=self._main_loop, name=f"main-{self.id}", daemon=True)
@@ -98,10 +108,12 @@ class Camera:
             try:
                 c = _open(self.cfg.main_url)
                 vs = c.streams.video[0]
-                aus = c.streams.audio[0] if (self.cfg.record_audio and c.streams.audio) else None
+                aus = c.streams.audio[0] if c.streams.audio else None   # read even if not recorded (sound meter)
                 self.ring.reset()
                 self.template_stream = vs
-                self.audio_template = aus
+                self.audio_template = aus if self.cfg.record_audio else None
+                self.has_audio = aus is not None
+                self._sq, self._ns = 0.0, 0
                 self._main_container = c
                 self.main_size = (vs.codec_context.width, vs.codec_context.height)
                 self.status.update(main="live", main_err=None,
@@ -116,8 +128,10 @@ class Camera:
                         continue
                     now = time.time()
                     if aus is not None and pkt.stream is aus:
-                        self.ring.push(Pkt(bytes(pkt), pkt.pts, pkt.dts, pkt.duration or 0,
-                                           pkt.time_base, False, now, audio=True))
+                        if self.cfg.record_audio:
+                            self.ring.push(Pkt(bytes(pkt), pkt.pts, pkt.dts, pkt.duration or 0,
+                                               pkt.time_base, False, now, audio=True))
+                        self._meter(pkt, now)
                         continue
                     self.ring.push(Pkt(bytes(pkt), pkt.pts, pkt.dts, pkt.duration or 0,
                                        pkt.time_base, bool(pkt.is_keyframe), now))
@@ -171,6 +185,35 @@ class Camera:
                     except Exception:  # noqa: BLE001
                         pass
             self._stop.wait(backoff)
+
+    def _meter(self, pkt: av.Packet, now: float) -> None:
+        """Loudness in dBFS over ~100 ms windows (RMS; a full-scale sine reads about -3)."""
+        try:
+            frames = pkt.decode()
+        except Exception:  # noqa: BLE001 - a bad audio packet shouldn't affect video
+            return
+        for fr in frames:
+            a = fr.to_ndarray()
+            if a.dtype == np.int16:
+                x = a.astype(np.float32) / 32768.0
+            elif a.dtype == np.int32:
+                x = a.astype(np.float32) / 2147483648.0
+            elif a.dtype == np.uint8:
+                x = (a.astype(np.float32) - 128.0) / 128.0
+            else:
+                x = a.astype(np.float32)
+            self._sq += float(np.square(x, dtype=np.float64).sum())
+            self._ns += x.size
+            per_window = (fr.sample_rate or 8000) * max(1, len(fr.layout.channels)) * 0.1
+            if self._ns >= per_window:
+                db = max(-90.0, 10.0 * math.log10(self._sq / self._ns + 1e-12))
+                self._sq, self._ns = 0.0, 0
+                self.sound_db, self.sound_ts = round(db, 1), now
+                for cb in self._audio_cbs:
+                    try:
+                        cb(self.id, db, now)
+                    except Exception:  # noqa: BLE001
+                        log.exception("[%s] audio callback failed", self.id)
 
     def _emit(self, fr: av.VideoFrame, now: float) -> None:
         if self._stop.is_set():          # camera removed/replaced: old thread may linger until next packet

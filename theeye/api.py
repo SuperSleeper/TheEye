@@ -80,7 +80,24 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         order = {c.id: i for i, c in enumerate(hub.cfg.cameras)}   # config order = display order
         cams = sorted(hub.cams.values(), key=lambda c: order.get(c.id, len(order)))
         return [{"id": c.id, "name": c.cfg.name or c.id, "status": c.status, "ring": c.ring.stats,
-                 "ring_seconds": c.cfg.ring_seconds} for c in cams]
+                 "ring_seconds": c.cfg.ring_seconds, "has_audio": c.has_audio,
+                 "sound_db": c.sound_db if time.time() - c.sound_ts < 2 else None} for c in cams]
+
+    @app.get("/api/sound")
+    def sound(camera_id: Optional[str] = None, hours: float = Query(6, gt=0, le=168)):
+        """Loudness history per camera (peak and average dBFS), bucketed so a chart gets ~360 points."""
+        since = time.time() - hours * 3600
+        bucket = max(10.0, hours * 3600 / 360)
+        where, args = "ts >= ?", [since]
+        if camera_id:
+            where += " AND camera_id = ?"
+            args.append(camera_id)
+        rows = db.all(f"SELECT camera_id, CAST(ts / {bucket} AS INTEGER) * {bucket} AS t, MAX(peak_db) AS peak,"
+                      f" AVG(avg_db) AS avg FROM sound_levels WHERE {where} GROUP BY camera_id, t ORDER BY t", args)
+        out: dict[str, list] = {}
+        for r in rows:
+            out.setdefault(r["camera_id"], []).append([r["t"], round(r["peak"], 1), round(r["avg"], 1)])
+        return {"since": since, "bucket": bucket, "cameras": out}
 
     @app.get("/api/cameras/{cam_id}/snapshot.jpg")
     def snapshot(cam_id: str):

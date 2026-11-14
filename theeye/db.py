@@ -69,6 +69,15 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS ev_cam_ts ON events(camera_id, start_ts);
 
+-- Loudness history for tuning sound triggers: one row per camera per 10 s.
+CREATE TABLE IF NOT EXISTS sound_levels (
+    camera_id TEXT NOT NULL,
+    ts REAL NOT NULL,                           -- start of the 10 s bucket
+    peak_db REAL NOT NULL,                      -- loudest 100 ms window, dBFS
+    avg_db REAL NOT NULL                        -- mean of the windows, dBFS
+);
+CREATE INDEX IF NOT EXISTS snd_cam_ts ON sound_levels(camera_id, ts);
+
 -- Which triggers / detections caused or occurred during an event.
 CREATE TABLE IF NOT EXISTS event_links (
     event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,

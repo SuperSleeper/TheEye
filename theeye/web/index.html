@@ -57,6 +57,17 @@
       <button id="tr-refresh">Refresh</button>
       <span class="muted">Raw motion triggers per zone. These only become events when a rule says so.</span>
     </div>
+    <div class="snd-head">
+      <h3>Sound levels</h3>
+      <div class="seg" id="snd-range" role="group" aria-label="Time range">
+        <button type="button" data-h="1">1 h</button><button type="button" data-h="6">6 h</button>
+        <button type="button" data-h="24">24 h</button><button type="button" data-h="168">7 d</button>
+      </div>
+      <span class="muted small">Loudest moment per interval, in dBFS (0 = the loudest the mic can record; quieter is more negative).
+        Dashed lines are your sound-rule thresholds — pick one above the camera's normal background.</span>
+    </div>
+    <div id="snd-charts" class="snd-grid"></div>
+    <h3>Motion triggers</h3>
     <table class="table"><thead><tr><th>Camera</th><th>Zone</th><th>Start</th><th>Duration</th><th>Peak area</th></tr></thead>
       <tbody id="tr-body"></tbody></table>
   </section>
@@ -122,7 +133,8 @@
           <div id="rl-conds"></div>
           <div class="row"><button type="button" data-add="motion">+ Motion</button>
             <button type="button" data-add="object">+ Object</button>
-            <button type="button" data-add="plate">+ Plate</button></div>
+            <button type="button" data-add="plate">+ Plate</button>
+            <button type="button" data-add="sound">+ Sound</button></div>
           <div class="row3">
             <label>Pre-roll s <input type="number" name="preroll" min="0"></label>
             <label>Post-roll s <input type="number" name="postroll" min="0"></label>
