@@ -35,20 +35,33 @@ When several events overlap on one camera they share one clip file, and each eve
 ```bash
 uv venv --system-site-packages -p python3.12 .venv && . .venv/bin/activate
 uv pip install -r requirements.txt
-cp config.example.yaml config.yaml   # add your cameras
 ollama pull gemma3:4b                # if not already present
-python -m theeye -c config.yaml      # → http://localhost:8080
+./run.sh                             # → http://localhost:8080
 ```
+
+`run.sh` runs the code from this repo inside a separate **install folder** (default `~/TheEye-install`,
+or `./run.sh /some/other/folder`, or `THEEYE_HOME=...`). Everything private lives there, outside git:
+
+```
+~/TheEye-install/
+  config.yaml   cameras, logins, passwords (created from config.example.yaml on first run; edit on the Setup tab)
+  data/         database, clips, snapshots
+  yolo11s.pt    model weights (downloaded on first run)
+```
+
+It refuses an install folder inside the repo. Use a second folder (e.g. `./run.sh ~/TheEye-test`) for a
+throwaway test install with its own config and data.
 
 The first start downloads the YOLO, plate and CLIP weights (about 400 MB).
 
 ### Keeping credentials out of git
 
-`config.yaml` holds camera passwords and is git-ignored, along with its `.bak` backups and `data/`.
+Camera passwords live in the install folder, which is outside the repo. If a `config.yaml` or `data/` ends up in the
+repo anyway, they're git-ignored, along with `.bak` backups.
 As a second line of defence, hooks in `.githooks/` block any commit, commit message or push that adds:
 
 - a forbidden file (`config.yaml` and backups, `data/`, `.env`, private keys)
-- one of the real passwords from your `config.yaml`
+- one of the real passwords from your `config.yaml` (in the repo or any install folder `run.sh` has used)
 - personal details: your camera IPs/hostnames and non-generic camera names (from `config.yaml`),
   your git email, your home folder path, or any real-looking email address
 - a non-placeholder `password:` in a config file, or a URL with an embedded `user:password@`
