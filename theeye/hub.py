@@ -115,7 +115,7 @@ class Hub:
             self.detector.stop()
 
     # ------------------------------------------------------------ live config
-    RESTART_KEYS = {"detector": "AI detection settings", "server": "server host/port",
+    RESTART_KEYS = {"detector": "AI detection settings", "server": "web server settings",
                     "storage.path": "storage path"}
 
     def apply_config(self, new: Config) -> list[str]:

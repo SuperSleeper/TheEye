@@ -1226,11 +1226,12 @@ function prettyErr(e) {
 async function restartServer() {
   banner('info', 'Restarting… this page will reconnect automatically.');
   await api('/api/restart', { method: 'POST' }).catch(() => {});
-  const port = S.cfg.server.port, samePort = String(port) === (location.port || (location.protocol === 'https:' ? '443' : '80'));
+  const port = S.cfg.server.port, proto = S.cfg.server.https ? 'https:' : 'http:';
+  const same = proto === location.protocol && String(port) === (location.port || (location.protocol === 'https:' ? '443' : '80'));
   await new Promise(r => setTimeout(r, 2500));
   for (let k = 0; k < 60; k++) {
     try {
-      if (!samePort) { banner('ok', `Restarted on port ${port}. <a href="${location.protocol}//${location.hostname}:${port}/#setup">Open the new address</a>`); return; }
+      if (!same) { banner('ok', `Restarted. <a href="${proto}//${location.hostname}:${port}/#setup">Open the new address</a>`); return; }
       await api('/api/stats'); location.reload(); return;
     } catch { await new Promise(r => setTimeout(r, 1000)); }
   }

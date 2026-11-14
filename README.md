@@ -36,7 +36,7 @@ When several events overlap on one camera they share one clip file, and each eve
 uv venv --system-site-packages -p python3.12 .venv && . .venv/bin/activate
 uv pip install -r requirements.txt
 ollama pull gemma3:4b                # if not already present
-./run.sh                             # → http://localhost:8080
+./run.sh                             # → https://localhost:8080
 ```
 
 `run.sh` runs the code from this repo inside a separate **install folder** (default `~/TheEye-install`,
@@ -46,6 +46,7 @@ or `./run.sh /some/other/folder`, or `THEEYE_HOME=...`). Everything private live
 ~/TheEye-install/
   config.yaml   cameras, logins, passwords (created from config.example.yaml on first run; edit on the Setup tab)
   data/         database, clips, snapshots
+  tls/          self-signed HTTPS certificate and its private key (created on first start)
   yolo11s.pt    model weights (downloaded on first run)
 ```
 
@@ -53,6 +54,11 @@ It refuses an install folder inside the repo. Use a second folder (e.g. `./run.s
 throwaway test install with its own config and data.
 
 The first start downloads the YOLO, plate and CLIP weights (about 400 MB).
+
+The web UI is served over **HTTPS** with a self-signed certificate made for this machine's names and addresses
+(renewed automatically when they change or it nears expiry). Browsers warn the first time: choose *Advanced → Proceed*,
+or import `tls/cert.pem` into your browser/OS as trusted to remove the warning. To use your own certificate, set
+`server.cert_file` / `server.key_file`; to turn HTTPS off, untick it on the Setup tab (or `server.https: false`).
 
 ### Keeping credentials out of git
 

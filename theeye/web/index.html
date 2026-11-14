@@ -251,6 +251,9 @@
           <label>Listen address <input data-k="server.host"></label>
           <label>Port <input type="number" min="1" max="65535" data-k="server.port" data-num></label>
         </div>
+        <label class="row"><input type="checkbox" data-k="server.https"> HTTPS (encrypted)</label>
+        <p class="muted small">Uses a self-signed certificate created on first start, so browsers show a warning once —
+          choose “Advanced → Proceed”. To use your own certificate, set <code>cert_file</code> and <code>key_file</code> in config.yaml.</p>
       </div>
       <p class="muted small" id="cfg-path"></p>
     </div>

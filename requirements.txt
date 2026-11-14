@@ -11,4 +11,5 @@ uvicorn[standard]
 pydantic
 pyyaml
 httpx
+cryptography>=41
 python-multipart

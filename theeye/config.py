@@ -177,6 +177,9 @@ class VehiclesConfig(BaseModel):
 class ServerConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8080
+    https: bool = True                 # serve over HTTPS; a self-signed certificate is created if none is given
+    cert_file: Optional[str] = None    # your own certificate + key (PEM); relative paths are from the config folder
+    key_file: Optional[str] = None
 
 
 class Config(BaseModel):

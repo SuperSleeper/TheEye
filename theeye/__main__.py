@@ -29,8 +29,19 @@ def main() -> None:
     if not cfg_path.exists():
         logging.warning("%s not found — starting empty; open the Setup tab to configure", cfg_path)
     app = create_app(hub, searcher, cfg_path)
+    srv = cfg.server
+    tls = {}
+    if srv.https:
+        if srv.cert_file and srv.key_file:
+            cert, key = (cfg_path.parent / srv.cert_file, cfg_path.parent / srv.key_file)
+        else:                       # kept next to the config (the install folder), never in the repo
+            from .tls import ensure_cert
+            cert, key = ensure_cert(cfg_path.parent / "tls")
+        tls = {"ssl_certfile": str(cert), "ssl_keyfile": str(key)}
+    logging.info("web UI on %s://%s:%d", "https" if srv.https else "http",
+                 "localhost" if srv.host in ("0.0.0.0", "::") else srv.host, srv.port)
     # live-view streams never end on their own; without a timeout, shutdown waits for every open browser tab
-    uvicorn.run(app, host=cfg.server.host, port=cfg.server.port, log_level="warning", timeout_graceful_shutdown=3)
+    uvicorn.run(app, host=srv.host, port=srv.port, log_level="warning", timeout_graceful_shutdown=3, **tls)
 
 
 if __name__ == "__main__":

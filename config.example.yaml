@@ -62,3 +62,6 @@ storage:
 server:
   host: 0.0.0.0
   port: 8080
+  https: true                # self-signed certificate created in tls/ next to this file on first start
+  # cert_file: my-cert.pem   # or use your own certificate + key
+  # key_file: my-key.pem
