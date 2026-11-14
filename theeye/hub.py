@@ -63,7 +63,7 @@ class Hub:
         self.detector: Optional[Detector] = None
         if cfg.detector.enabled:
             self.detector = Detector(cfg.detector, self.data / "snaps", self.motion.zones_for,
-                                     self._main_frame, self.embedder)
+                                     self._main_frame, self.embedder, self.motion.motion_in_box)
             self.detector.on_track_new = self._track_new
             self.detector.on_track_end = self._track_end
             self.detector.on_frame_tracks = lambda cam, ts, tr: self._evaluate(cam)
@@ -161,7 +161,8 @@ class Hub:
     def reload_zones(self) -> None:
         rows = self.db.all("SELECT * FROM zones")
         self.motion.set_zones([Zone(r["id"], r["camera_id"], r["name"], jload(r["points"], []), r["kind"],
-                                    r["sensitivity"], r["min_area"], r["min_frames"], bool(r["enabled"]))
+                                    r["sensitivity"], r["min_area"], r["min_frames"], bool(r["enabled"]),
+                                    bool(r.get("ai", 1)))
                                for r in rows])
 
     def reload_rules(self) -> None:

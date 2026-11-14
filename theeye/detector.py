@@ -5,6 +5,7 @@ Frames arrive from cameras at analyze_fps; only the newest frame per camera is k
 """
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -51,13 +52,16 @@ class Track:
     still_bbox: list[float] = field(default_factory=list)   # where it was when it last moved
     still_since: float = 0.0
     parked: bool = False             # hasn't moved for detector.stationary_seconds: rules ignore it
+    seen_moving: bool = False        # motion seen inside its box at some point (sticky for the track)
+    confirmed: bool = True           # counts for rules: seen moving, or motion confirmation is off
     db_id: Optional[int] = None
     hits: int = 0
 
     def public(self) -> dict:
         return {"key": self.key, "label": self.label, "bbox": [round(v, 4) for v in self.bbox],
                 "conf": round(self.conf, 3), "zones": sorted(self.zones), "plate": self.plate,
-                "first_ts": self.first_ts, "last_ts": self.last_ts, "db_id": self.db_id, "parked": self.parked}
+                "first_ts": self.first_ts, "last_ts": self.last_ts, "db_id": self.db_id, "parked": self.parked,
+                "confirmed": self.confirmed}
 
 
 def _iou(a: list[float], b: list[float]) -> float:
@@ -72,17 +76,22 @@ class Detector:
     def __init__(self, cfg: DetectorConfig, snap_dir: Path,
                  zones_for: Callable[[str], list[Zone]],
                  main_frame: Callable[[str], Optional[np.ndarray]],
-                 embedder=None):
+                 embedder=None,
+                 motion_in_box: Optional[Callable[[str, list[float]], float]] = None):
         self.cfg = cfg
         self.snap_dir = snap_dir
         self.zones_for = zones_for
         self.main_frame = main_frame
         self.embedder = embedder
+        self.motion_in_box = motion_in_box
         self._pending: dict[str, tuple[np.ndarray, float]] = {}
         self._cv = threading.Condition()
         self._stop = threading.Event()
         self.tracks: dict[str, dict[str, Track]] = {}
         self._parked_spots: dict[str, list[tuple[str, list[float], float]]] = {}   # cam -> (label, bbox, last seen)
+        # Persisted so a restart doesn't make every parked car look newly arrived for stationary_seconds.
+        self._spots_file = snap_dir.parent / "parked_spots.json"
+        self._load_spots()
         self._tlock = threading.Lock()
         self._seq = 0
         self._model = None
@@ -190,12 +199,16 @@ class Detector:
         h, w = img.shape[:2]
         zones = [z for z in self.zones_for(cam) if z.enabled]
         excl = [z for z in zones if z.kind == "exclude"]
+        # Zones marked "only detect objects inside": if any exist, objects outside all of them are ignored.
+        ai_zones = [z for z in zones if z.kind != "exclude" and (z.ai or z.kind == "detect")]
         dets = []
         for b in res.boxes:
             x1, y1, x2, y2 = (b.xyxy[0].tolist())
             nb = [x1 / w, y1 / h, x2 / w, y2 / h]
             ax, ay = (nb[0] + nb[2]) / 2, nb[3]           # anchor = bottom-centre ("feet")
             if any(z.contains(ax, ay) for z in excl):
+                continue
+            if ai_zones and not any(z.contains(ax, ay) for z in ai_zones):
                 continue
             label = self._names[int(b.cls[0])]
             zids = {z.id for z in zones if z.kind != "exclude" and z.contains(ax, ay)}
@@ -231,6 +244,9 @@ class Detector:
             if _iou(best.still_bbox, nb) < PARK_IOU:          # it moved: restart the stillness clock
                 best.still_bbox, best.still_since = nb, ts
             best.parked = self.cfg.stationary_seconds > 0 and ts - best.still_since >= self.cfg.stationary_seconds
+            if not best.seen_moving and self.motion_in_box is not None:
+                best.seen_moving = self.motion_in_box(cam, nb) >= self.cfg.motion_min_fraction
+            best.confirmed = best.seen_moving or not self.cfg.require_motion or self.motion_in_box is None
             best.zones |= zids
             if conf > best.best_conf * 1.05:
                 best.best_conf, best.best_bbox = conf, nb
@@ -275,8 +291,34 @@ class Detector:
         except Exception:  # noqa: BLE001
             log.debug("plate read failed", exc_info=True)
 
+    def _load_spots(self) -> None:
+        try:
+            raw = json.loads(self._spots_file.read_text())
+            now = time.time()
+            self._parked_spots = {cam: [(l, b, ts) for l, b, ts in spots if now - ts < PARK_MEMORY_S]
+                                  for cam, spots in raw.items()}
+        except (OSError, ValueError, TypeError):
+            self._parked_spots = {}
+
+    def _save_spots(self) -> None:
+        """Remembered spots plus objects parked right now (they haven't 'ended', but a restart would lose them)."""
+        with self._tlock:
+            out = {cam: list(spots) for cam, spots in self._parked_spots.items()}
+            for cam, tr in self.tracks.items():
+                out.setdefault(cam, []).extend((t.label, t.bbox, t.last_ts) for t in tr.values() if t.parked)
+        try:
+            tmp = self._spots_file.with_suffix(".tmp")
+            tmp.write_text(json.dumps(out))
+            tmp.replace(self._spots_file)
+        except OSError:
+            log.debug("could not save parked spots", exc_info=True)
+
     def _reaper(self) -> None:
+        last_save = 0.0
         while not self._stop.wait(1.0):
+            if time.time() - last_save > 10:
+                self._save_spots()
+                last_save = time.time()
             now = time.time()
             ended: list[Track] = []
             with self._tlock:

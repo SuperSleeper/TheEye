@@ -77,11 +77,13 @@ function drawOverlay(cv, img, st, camId) {
   ctx.font = '12px system-ui';
   for (const t of st.tracks) {
     const [x1, y1, x2, y2] = t.bbox;
-    const col = t.parked ? '#9aa3ad' : '#ffcc00';          // parked = ignored by rules: grey, dashed
-    ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.setLineDash(t.parked ? [6, 4] : []);
+    // Ignored by rules: parked (grey dashed) or never seen moving (grey dotted)
+    const ignored = t.parked || t.confirmed === false, col = ignored ? '#9aa3ad' : '#ffcc00';
+    ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.setLineDash(t.parked ? [6, 4] : t.confirmed === false ? [2, 3] : []);
     ctx.strokeRect(ox + x1 * dw, oy + y1 * dh, (x2 - x1) * dw, (y2 - y1) * dh);
     ctx.setLineDash([]);
-    const label = `${t.label}${t.parked ? ' · parked' : ` ${(t.conf * 100).toFixed(0)}%`}${t.plate ? ' ' + t.plate : ''}`;
+    const tag = t.parked ? ' · parked' : t.confirmed === false ? ` ${(t.conf * 100).toFixed(0)}% · no motion` : ` ${(t.conf * 100).toFixed(0)}%`;
+    const label = `${t.label}${tag}${t.plate ? ' ' + t.plate : ''}`;
     ctx.fillStyle = col; ctx.fillRect(ox + x1 * dw, oy + y1 * dh - 16, ctx.measureText(label).width + 8, 16);
     ctx.fillStyle = '#000'; ctx.fillText(label, ox + x1 * dw + 4, oy + y1 * dh - 4);
   }
@@ -325,6 +327,7 @@ function selectZone(z) {
   if (Z.sel) {
     for (const k of ['name', 'kind', 'sensitivity', 'min_area', 'min_frames', 'color']) f.elements[k].value = Z.sel[k];
     f.elements.enabled.checked = Z.sel.enabled;
+    f.elements.ai.checked = Z.sel.ai ?? true;
     updateVals();
     $('#zn-delete').classList.toggle('hidden', !Z.sel.id);
   }
@@ -389,7 +392,8 @@ $('#zn-form').onsubmit = async e => {
   e.preventDefault();
   const f = e.target;
   const z = { ...Z.sel, name: f.elements.name.value, kind: f.elements.kind.value, sensitivity: +f.elements.sensitivity.value,
-    min_area: +f.elements.min_area.value, min_frames: +f.elements.min_frames.value, color: f.elements.color.value, enabled: f.elements.enabled.checked };
+    min_area: +f.elements.min_area.value, min_frames: +f.elements.min_frames.value, color: f.elements.color.value, enabled: f.elements.enabled.checked,
+    ai: f.elements.ai.checked };
   const r = z.id ? await api(`/api/zones/${z.id}`, { method: 'PUT', body: z }) : await api('/api/zones', { method: 'POST', body: z });
   Z.sel = { ...z, id: r.id }; await reloadZones(); selectZone(Z.zones.find(x => x.id === r.id));
 };

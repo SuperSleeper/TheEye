@@ -115,6 +115,9 @@ class DB:
             "trigger_ts": "REAL",                         # when the rule fired (start_ts = trigger_ts - preroll)
             "thumb_score": "REAL NOT NULL DEFAULT 0",     # quality of the object-centered thumbnail in use
         },
+        "zones": {
+            "ai": "INTEGER NOT NULL DEFAULT 1",           # objects only count when their base is inside such a zone
+        },
     }
 
     def _add_columns(self) -> None:

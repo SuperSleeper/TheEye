@@ -136,6 +136,8 @@ class DetectorConfig(BaseModel):
     device: str = "cuda:0"
     confidence: float = 0.45
     stationary_seconds: float = 30.0   # objects that haven't moved this long are "parked": rules ignore them (0 = off)
+    require_motion: bool = True        # objects only trigger rules once motion was seen inside their box
+    motion_min_fraction: float = 0.03  # share of the box that must change to count as "seen moving"
     classes: list[str] = Field(default_factory=lambda: [
         "person", "bicycle", "car", "motorcycle", "bus", "truck", "dog", "cat", "bird"])
     plates: bool = True

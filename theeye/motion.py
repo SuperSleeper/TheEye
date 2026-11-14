@@ -14,6 +14,7 @@ import numpy as np
 
 WORK_WIDTH = 320
 FULL_FRAME = 0           # zone id used when a camera has no motion zones drawn
+PIXEL_MOTION_THR = 25    # grey-level change that counts as "this pixel moved" for per-object motion checks
 
 
 @dataclass
@@ -27,6 +28,7 @@ class Zone:
     min_area: float = 0.02
     min_frames: int = 2
     enabled: bool = True
+    ai: bool = True                 # limit AI detection to this zone (always true for kind "detect")
 
     def contains(self, x: float, y: float) -> bool:
         """Point-in-polygon on normalized coordinates."""
@@ -50,6 +52,7 @@ class _CamState:
     exclude: Optional[np.ndarray] = None
     zstate: dict[int, _ZoneState] = field(default_factory=dict)
     last_ts: float = 0.0
+    moved_at: Optional[np.ndarray] = None   # per-pixel time of last change (work resolution)
 
 
 class MotionEngine:
@@ -90,6 +93,22 @@ class MotionEngine:
             return set()
         return {zid for zid, s in st.zstate.items() if s.active}
 
+    def motion_in_box(self, cam: str, bbox: list[float], within: float = 2.0) -> float:
+        """Fraction of a normalized box whose pixels changed in the last `within` seconds.
+
+        Lets the detector tell real moving objects from static false positives (a plant read as a person)."""
+        st = self._cams.get(cam)
+        if st is None or st.moved_at is None:
+            return 0.0
+        m = st.moved_at
+        h, w = m.shape
+        x1, y1 = int(bbox[0] * w), int(bbox[1] * h)
+        x2, y2 = max(x1 + 1, int(round(bbox[2] * w))), max(y1 + 1, int(round(bbox[3] * h)))
+        roi = m[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
+        if roi.size == 0:
+            return 0.0
+        return float(np.count_nonzero(roi >= st.last_ts - within)) / roi.size
+
     # -----------------------------------------------------------------------
     def process(self, cam: str, img: np.ndarray, ts: float) -> None:
         h0, w0 = img.shape[:2]
@@ -124,6 +143,9 @@ class MotionEngine:
         cv2.accumulateWeighted(gray, st.bg, 0.05)
         if st.exclude is not None:
             diff[st.exclude > 0] = 0
+        if st.moved_at is None or st.moved_at.shape != diff.shape:
+            st.moved_at = np.zeros(diff.shape, np.float64)
+        st.moved_at[diff > PIXEL_MOTION_THR] = ts
 
         dt = max(ts - st.last_ts, 1e-3)
         st.last_ts = ts

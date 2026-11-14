@@ -31,6 +31,7 @@ class ZoneIn(BaseModel):
     min_frames: int = Field(2, ge=1, le=100)
     color: str = "#ff3b30"
     enabled: bool = True
+    ai: bool = True
 
 
 class RuleIn(BaseModel):
@@ -116,6 +117,7 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         for r in rows:
             r["points"] = jload(r["points"], [])
             r["enabled"] = bool(r["enabled"])
+            r["ai"] = bool(r.get("ai", 1))
         return rows
 
     def _zone_params(z: ZoneIn):
@@ -123,20 +125,20 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
             raise HTTPException(400, "zone needs at least 3 points")
         pts = [[min(1.0, max(0.0, x)), min(1.0, max(0.0, y))] for x, y in z.points]
         return (z.camera_id, z.name, json.dumps(pts), z.kind, z.sensitivity, z.min_area, z.min_frames,
-                z.color, int(z.enabled))
+                z.color, int(z.enabled), int(z.ai))
 
     @app.post("/api/zones")
     def zone_create(z: ZoneIn):
         cam_or_404(z.camera_id)
-        zid = db.insert("INSERT INTO zones(camera_id,name,points,kind,sensitivity,min_area,min_frames,color,enabled)"
-                        " VALUES(?,?,?,?,?,?,?,?,?)", _zone_params(z))
+        zid = db.insert("INSERT INTO zones(camera_id,name,points,kind,sensitivity,min_area,min_frames,color,enabled,ai)"
+                        " VALUES(?,?,?,?,?,?,?,?,?,?)", _zone_params(z))
         hub.reload_zones()
         return {"id": zid}
 
     @app.put("/api/zones/{zid}")
     def zone_update(zid: int, z: ZoneIn):
         db.execute("UPDATE zones SET camera_id=?,name=?,points=?,kind=?,sensitivity=?,min_area=?,min_frames=?,"
-                   "color=?,enabled=? WHERE id=?", _zone_params(z) + (zid,))
+                   "color=?,enabled=?,ai=? WHERE id=?", _zone_params(z) + (zid,))
         hub.reload_zones()
         return {"id": zid}
 

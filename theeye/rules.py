@@ -78,6 +78,7 @@ def evaluate(rule: Rule, st: CamState) -> tuple[bool, list[str]]:
             minc = float(c.get("min_confidence", 0))
             matches = [t for t in st.tracks
                        if not t.get("parked")                  # parked cars etc. don't trigger events
+                       and t.get("confirmed", True)            # never seen moving: likely a static false positive
                        and (not labels or t["label"] in labels) and t["conf"] >= minc
                        and (zid in (None, "", "*") or int(zid) in t["zones"])]
             ok = len(matches) >= int(c.get("min_count", 1))
@@ -85,7 +86,7 @@ def evaluate(rule: Rule, st: CamState) -> tuple[bool, list[str]]:
         elif typ == "plate":
             pat = (c.get("pattern") or "*").upper()
             pats = [p.strip() for p in pat.split(",") if p.strip()]
-            hits = [t["plate"] for t in st.tracks if t.get("plate") and not t.get("parked")
+            hits = [t["plate"] for t in st.tracks if t.get("plate") and not t.get("parked") and t.get("confirmed", True)
                     and any(fnmatch.fnmatch(t["plate"], p) for p in pats)
                     and (zid in (None, "", "*") or int(zid) in t["zones"])]
             results.append((bool(hits), f"plate {','.join(hits)}" if hits else "plate"))

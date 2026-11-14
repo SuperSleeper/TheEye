@@ -87,6 +87,9 @@
             <input type="range" name="min_area" min="0.001" max="0.5" step="0.001"></label>
           <label>Min frames <input type="number" name="min_frames" min="1" max="50"></label>
           <label>Colour <input type="color" name="color"></label>
+          <label class="row"><input type="checkbox" name="ai"> Only detect objects (AI) inside this zone</label>
+          <p class="muted small" style="margin-top:-6px">An object counts when its base (where it meets the ground) is inside.
+            With several such zones, inside any of them counts. Uncheck to let objects anywhere in the picture trigger rules.</p>
           <label class="row"><input type="checkbox" name="enabled"> Enabled</label>
           <div class="row">
             <button type="submit">Save</button>
@@ -173,6 +176,8 @@
           <label>Ignore parked objects after (seconds)
             <input type="number" min="0" max="3600" step="5" data-k="detector.stationary_seconds" data-num>
             <span class="small muted">objects that haven't moved this long stop triggering events (e.g. parked cars); 0 = off</span></label>
+          <label class="row"><input type="checkbox" data-k="detector.require_motion"> Require motion on the object
+            <span class="small muted">— an object only triggers events once motion is seen inside its box, which filters static false detections</span></label>
         </div>
         <div class="sub-h">Objects to detect</div>
         <div class="checks" id="cfg-classes"></div>
