@@ -202,3 +202,10 @@ button.ov[aria-pressed="true"] { color: var(--text); border-color: var(--accent)
 .snd-card details { margin-top: 6px; font-size: 12px; }
 .snd-card details table { width: 100%; border-collapse: collapse; margin-top: 4px; }
 .snd-card details td { padding: 2px 4px; border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+
+/* vehicles */
+.veh .body .row2 { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.veh .body .row2 button { font-size: 12px; padding: 3px 8px; }
+.veh.flagged { border-color: var(--danger); }
+.veh .status { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--panel2); }
+.veh.flagged .status { background: var(--danger); color: #fff; }

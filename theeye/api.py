@@ -339,6 +339,37 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
                     r["seek"] = max(0.0, e["clip_offset"] + r["first_ts"] - e["start_ts"])
         return res
 
+    # ------------------------------------------------------------ vehicles
+    @app.get("/api/vehicles")
+    def vehicles(status: str = "all", limit: int = Query(200, le=2000)):
+        where, args = ("", []) if status == "all" else ("WHERE status = ?", [status])
+        rows = db.all(f"SELECT id, grp, label, plate, sightings, visits, first_ts, last_ts, cameras, snapshot_path,"
+                      f" status, flagged_ts, note FROM vehicles {where}"
+                      f" ORDER BY status = 'flagged' DESC, visits DESC, last_ts DESC LIMIT ?", args + [limit])
+        for r in rows:
+            r["cameras"] = jload(r["cameras"], [])
+        counts = {r["status"]: r["n"] for r in db.all("SELECT status, COUNT(*) AS n FROM vehicles GROUP BY status")}
+        return {"vehicles": rows, "counts": counts, "repeat_visits": hub.cfg.vehicles.repeat_visits}
+
+    @app.get("/api/vehicles/{vid}/sightings")
+    def vehicle_sightings(vid: int):
+        rows = db.all("SELECT d.id, d.camera_id, d.label, d.confidence, d.first_ts, d.last_ts, d.plate, d.snapshot_path,"
+                      " d.event_id, e.clip_path, e.clip_offset, e.start_ts AS ev_start FROM detections d"
+                      " LEFT JOIN events e ON e.id = d.event_id WHERE d.vehicle_id = ? ORDER BY d.first_ts DESC", (vid,))
+        for r in rows:
+            if r["clip_path"]:
+                r["seek"] = max(0.0, r["clip_offset"] + r["first_ts"] - r["ev_start"])
+        return rows
+
+    @app.put("/api/vehicles/{vid}")
+    def vehicle_update(vid: int, status: str = Body(..., pattern="^(new|flagged|known)$"),
+                       note: Optional[str] = Body(None)):
+        try:
+            hub.vehicles.set_status(vid, status, note)
+        except KeyError:
+            raise HTTPException(404)
+        return {"ok": True}
+
     # --------------------------------------------------------------- misc
     @app.get("/api/stats")
     def stats():

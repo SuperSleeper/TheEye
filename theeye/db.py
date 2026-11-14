@@ -78,6 +78,26 @@ CREATE TABLE IF NOT EXISTS sound_levels (
 );
 CREATE INDEX IF NOT EXISTS snd_cam_ts ON sound_levels(camera_id, ts);
 
+-- Repeat-vehicle tracking: one row per distinct vehicle (matched by plate or appearance).
+CREATE TABLE IF NOT EXISTS vehicles (
+    id INTEGER PRIMARY KEY,
+    grp TEXT NOT NULL,                          -- matching group: car (car/truck/bus) | motorcycle | ...
+    label TEXT NOT NULL,                        -- label of the first sighting
+    plate TEXT,
+    embedding BLOB,                             -- n_ex exemplar sighting embeddings (float32, row-major)
+    n_ex INTEGER NOT NULL DEFAULT 0,
+    sightings INTEGER NOT NULL DEFAULT 1,
+    visits INTEGER NOT NULL DEFAULT 1,          -- sightings separated by more than the visit gap
+    first_ts REAL NOT NULL,
+    last_ts REAL NOT NULL,
+    cameras TEXT NOT NULL DEFAULT '[]',
+    snapshot_path TEXT,
+    status TEXT NOT NULL DEFAULT 'new',         -- new | flagged | known
+    flagged_ts REAL,
+    note TEXT
+);
+CREATE INDEX IF NOT EXISTS veh_status ON vehicles(status, visits);
+
 -- Which triggers / detections caused or occurred during an event.
 CREATE TABLE IF NOT EXISTS event_links (
     event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
@@ -126,6 +146,10 @@ class DB:
         },
         "zones": {
             "ai": "INTEGER NOT NULL DEFAULT 1",           # objects only count when their base is inside such a zone
+        },
+        "detections": {
+            "vehicle_id": "INTEGER",                      # repeat-vehicle tracking
+            "moving": "INTEGER",                          # was seen moving (NULL = recorded before this was stored)
         },
     }
 

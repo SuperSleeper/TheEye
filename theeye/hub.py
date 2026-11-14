@@ -29,6 +29,7 @@ from .detector import Detector, Track
 from .embeddings import Embedder
 from .motion import MotionEngine, Zone
 from .recorder import RecordingManager
+from .vehicles import VehicleRegistry
 from .rules import CamState, Rule, evaluate
 
 log = logging.getLogger("theeye.hub")
@@ -58,6 +59,7 @@ class Hub:
         per_cam = int(cfg.storage.ram_budget_gb * 1e9 / n)
         self.cams: dict[str, Camera] = {c.id: Camera(c, per_cam) for c in cfg.cameras if c.enabled}
         self.rec = RecordingManager(self.cams, self.data / "clips")
+        self.vehicles = VehicleRegistry(self.db, cfg.vehicles)
         self.motion = MotionEngine(self._motion_start, self._motion_end)
         self.embedder = (Embedder(cfg.detector.clip_model, cfg.detector.clip_pretrained, cfg.detector.device)
                          if cfg.detector.embeddings else None)
@@ -92,6 +94,9 @@ class Hub:
         if self.detector:
             self.detector.start()
         threading.Thread(target=self._ticker, name="hub-tick", daemon=True).start()
+        if not self.db.one("SELECT 1 FROM vehicles LIMIT 1"):     # first run with vehicle tracking: seed from history
+            threading.Thread(target=lambda: log.info("vehicles: seeded from %d past sightings", self.vehicles.backfill()),
+                             name="vehicle-backfill", daemon=True).start()
         threading.Thread(target=self._retention, name="retention", daemon=True).start()
 
     def stop(self) -> None:
@@ -143,6 +148,7 @@ class Hub:
             cam.ring.max_bytes = per_cam
         # keep data path unchanged until restart; everything else takes effect now
         new.storage.path = old.storage.path
+        self.vehicles.cfg = new.vehicles
         self.cfg = new
         return restart
 
@@ -248,9 +254,15 @@ class Hub:
         emb = self.detector.embed(t) if self.detector else None
         self.db.execute(
             "UPDATE detections SET confidence=?, last_ts=?, bbox=?, zones=?, plate=?, plate_conf=?,"
-            " snapshot_path=COALESCE(?, snapshot_path), embedding=COALESCE(?, embedding) WHERE id=?",
+            " snapshot_path=COALESCE(?, snapshot_path), embedding=COALESCE(?, embedding), moving=? WHERE id=?",
             (t.best_conf, t.last_ts, json.dumps(t.best_bbox), json.dumps(sorted(t.zones)), t.plate,
-             t.plate_conf or None, snap, emb, t.db_id))
+             t.plate_conf or None, snap, emb, int(t.seen_moving), t.db_id))
+        if self.vehicles.eligible(t.label, t.best_bbox, t.seen_moving):
+            try:
+                self.vehicles.observe(t.db_id, t.camera_id, t.label, t.first_ts, t.last_ts, emb, t.plate,
+                                      t.plate_conf, snap)
+            except Exception:  # noqa: BLE001
+                log.exception("vehicle matching failed")
         if t.plate:
             with self._lock:
                 for ev in self._events_for(t.camera_id):

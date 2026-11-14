@@ -13,6 +13,7 @@
     <button data-tab="live" class="active">Live</button>
     <button data-tab="events">Events</button>
     <button data-tab="search">Search</button>
+    <button data-tab="vehicles">Vehicles <span id="veh-badge" class="badge err hidden"></span></button>
     <button data-tab="triggers">Motion log</button>
     <button data-tab="zones">Zones</button>
     <button data-tab="rules">Rules</button>
@@ -48,6 +49,18 @@
     </form>
     <div id="search-meta" class="muted"></div>
     <div id="search-results" class="cards"></div>
+  </section>
+
+  <!-- VEHICLES -->
+  <section id="tab-vehicles" class="tab">
+    <div class="toolbar">
+      <div class="seg" id="veh-filter" role="group" aria-label="Show">
+        <button type="button" data-s="flagged">🚩 Flagged</button><button type="button" data-s="all">All</button>
+        <button type="button" data-s="known">Known</button>
+      </div>
+      <span class="muted small" id="veh-help"></span>
+    </div>
+    <div id="veh-list" class="cards"></div>
   </section>
 
   <!-- TRIGGERS -->

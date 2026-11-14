@@ -163,6 +163,14 @@ class StorageConfig(BaseModel):
     ram_budget_gb: float = 16.0        # hard cap across all ring buffers
 
 
+class VehiclesConfig(BaseModel):
+    enabled: bool = True
+    repeat_visits: int = Field(3, ge=2, le=100)        # flag a vehicle seen on this many separate visits
+    visit_gap_minutes: float = Field(30, ge=1)         # sightings closer together than this are one visit
+    match_similarity: float = Field(0.88, ge=0.5, le=0.99)   # appearance match threshold (cosine)
+    labels: list[str] = Field(default_factory=lambda: ["car", "truck", "motorcycle", "bus"])
+
+
 class ServerConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8080
@@ -175,6 +183,7 @@ class Config(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
+    vehicles: VehiclesConfig = Field(default_factory=VehiclesConfig)
 
     @model_validator(mode="before")
     @classmethod

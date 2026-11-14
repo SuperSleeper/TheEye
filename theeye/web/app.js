@@ -30,7 +30,7 @@ function showTab(name) {
   Object.values(timers).forEach(clearInterval);
   for (const k in timers) delete timers[k];
   if (name !== 'live') { $('#live-grid').innerHTML = ''; closeFocus?.(); }
-  ({ live: initLive, events: loadEvents, triggers: loadTriggers, zones: initZones, rules: initRules, setup: () => initSetup(), search: () => $('#search-q').focus() })[name]?.();
+  ({ live: initLive, events: loadEvents, triggers: loadTriggers, zones: initZones, rules: initRules, setup: () => initSetup(), search: () => $('#search-q').focus(), vehicles: loadVehicles })[name]?.();
   location.hash = name;
   $('#overlay-toggles').hidden = name !== 'live';       // overlays only exist on Live
 }
@@ -376,7 +376,7 @@ function updateEventNav() {
   $('#pl-prev').disabled = !can(-1); $('#pl-next').disabled = !can(1);
   $('#pl-prev').title = ev ? 'Earlier event (←)' : 'Previous result (←)';
   $('#pl-next').title = ev ? 'Later event (→)' : 'Next result (→)';
-  $('#pl-pos').textContent = i < 0 ? '' : ev ? `${n - i} / ${n}` : `Result ${i + 1} / ${n}`;
+  $('#pl-pos').textContent = i < 0 ? '' : ev ? `${n - i} / ${n}` : `${EV.mode === 'vehicle' ? 'Sighting' : 'Result'} ${i + 1} / ${n}`;
   $('#pl-prev').hidden = $('#pl-next').hidden = i < 0;
 }
 $('#pl-prev').onclick = () => stepEvent(-1);
@@ -420,6 +420,55 @@ async function openEvent(id, seek) {
 }
 $('#pl-close').onclick = () => $('#player').close();
 $('#player').addEventListener('close', () => $('#pl-video').pause());
+
+// ---------------------------------------------------------------- vehicles (repeat visitors)
+const VH = (() => { try { return { status: localStorage.getItem('theeye.vehFilter') || 'flagged' }; } catch { return { status: 'flagged' }; } })();
+$$('#veh-filter button').forEach(b => b.onclick = () => {
+  VH.status = b.dataset.s; try { localStorage.setItem('theeye.vehFilter', VH.status); } catch { /* not persisted */ }
+  loadVehicles();
+});
+async function loadVehicles() {
+  $$('#veh-filter button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.s === VH.status)));
+  const r = await api(`/api/vehicles?status=${VH.status}`);
+  updateVehicleBadge(r.counts);
+  $('#veh-help').textContent = `A vehicle seen moving on ${r.repeat_visits} separate visits (30+ min apart) is flagged. ` +
+    'Matched by licence plate when readable, otherwise by appearance, so two identical cars can be merged. Mark your own cars as Known.';
+  $('#veh-list').innerHTML = r.vehicles.map(v => `
+    <div class="card veh ${v.status}" data-id="${v.id}">
+      ${v.snapshot_path ? `<img loading="lazy" src="/media/${esc(v.snapshot_path)}">` : '<img>'}
+      <div class="body">
+        <div class="title"><span>${esc(v.label)}${v.plate ? ` <span class="chip plate">${esc(v.plate)}</span>` : ''}</span>
+          ${v.status === 'new' ? '' : `<span class="status">${v.status === 'flagged' ? '🚩 flagged' : 'known'}</span>`}</div>
+        <div><b>${v.visits}</b> visit${v.visits === 1 ? '' : 's'} · ${v.sightings} sighting${v.sightings === 1 ? '' : 's'} · ${v.cameras.map(camName).map(esc).join(', ')}</div>
+        <div class="muted">last ${fmtTime(v.last_ts)}${v.note ? ` · ${esc(v.note)}` : ''}</div>
+        <div class="row2">
+          ${v.status !== 'known' ? '<button type="button" data-st="known" title="Your own or a neighbour&#39;s car: never flag">Mark known</button>' : ''}
+          ${v.status === 'flagged' ? '<button type="button" data-st="new" title="Clear the flag; it flags again after more visits">Unflag</button>' : ''}
+          ${v.status === 'new' ? '<button type="button" data-st="flagged">🚩 Flag</button>' : ''}
+          ${v.status === 'known' ? '<button type="button" data-st="new">Not known</button>' : ''}
+        </div>
+      </div>
+    </div>`).join('') || `<p class="muted">${VH.status === 'flagged' ? 'No flagged vehicles.' : 'No vehicles yet.'}</p>`;
+  $$('#veh-list .veh').forEach(card => {
+    const id = +card.dataset.id;
+    $$('button[data-st]', card).forEach(b => b.onclick = async e => {
+      e.stopPropagation();
+      await api(`/api/vehicles/${id}`, { method: 'PUT', body: { status: b.dataset.st } });
+      loadVehicles();
+    });
+    card.onclick = async () => {                          // play its sightings; the player's arrows step through them
+      const s = (await api(`/api/vehicles/${id}/sightings`)).filter(x => x.event_id && x.clip_path);
+      if (!s.length) { card.querySelector('.muted').textContent = 'No recorded clips for this vehicle.'; return; }
+      openFromList(s.map(x => ({ id: x.event_id, seek: x.seek })), 0, 'vehicle');
+    };
+  });
+}
+function updateVehicleBadge(counts) {
+  const n = counts?.flagged || 0, b = $('#veh-badge');
+  b.textContent = `🚩${n}`; b.classList.toggle('hidden', !n);
+}
+setInterval(() => api('/api/vehicles?status=flagged&limit=1').then(r => updateVehicleBadge(r.counts)).catch(() => {}), 60000);
+api('/api/vehicles?status=flagged&limit=1').then(r => updateVehicleBadge(r.counts)).catch(() => {});
 
 // ---------------------------------------------------------------- search
 // Every kind of object found in a recording, with its best certainty; the one that matched is highlighted.
