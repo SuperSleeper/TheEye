@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import configapi
+from . import auth, configapi
 from .db import jload
 from .hub import Hub
 from .search import Searcher
@@ -438,6 +438,7 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         return FileResponse(p, media_type=mt)
 
     configapi.register(app, hub, searcher, config_path)
+    auth.register(app, auth.AuthStore(config_path.parent / "auth.json", db), WEB)
     class NoCacheStatic(StaticFiles):
         """UI files change with every update; make browsers revalidate (cheap 304 via ETag) instead of
         heuristically caching an old app.js next to a new index.html."""

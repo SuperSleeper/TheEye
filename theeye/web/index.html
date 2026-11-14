@@ -24,6 +24,7 @@
     <button type="button" class="ov" data-ov="zones" title="Show zone outlines">⬠ Zones</button>
   </div>
   <div id="stats" class="muted"></div>
+  <button type="button" id="logout" title="Sign out of TheEye">Sign out</button>
 </header>
 
 <main>
@@ -254,6 +255,25 @@
         <label class="row"><input type="checkbox" data-k="server.https"> HTTPS (encrypted)</label>
         <p class="muted small">Uses a self-signed certificate created on first start, so browsers show a warning once —
           choose “Advanced → Proceed”. To use your own certificate, set <code>cert_file</code> and <code>key_file</code> in config.yaml.</p>
+      </div>
+      <div class="card-s">
+        <div class="card-h"><h2>Sign-in</h2><span class="muted small">Signed in as <b id="acct-user"></b></span></div>
+        <form id="acct-pw-form" class="fgrid" autocomplete="on">
+          <input type="text" name="username" autocomplete="username" class="hidden" tabindex="-1" aria-hidden="true">
+          <label>Current password <input type="password" name="current" autocomplete="current-password" required maxlength="256"></label>
+          <label>New password <input type="password" name="new" autocomplete="new-password" required minlength="8" maxlength="256"></label>
+          <label>Repeat new password <input type="password" name="repeat" autocomplete="new-password" required maxlength="256"></label>
+          <div class="row"><button type="submit">Change password</button>
+            <button type="button" id="acct-logout-all">Sign out all other devices</button></div>
+        </form>
+        <p id="acct-pw-msg" class="small"></p>
+        <p class="muted small">Forgot it? On the TheEye computer run <code>./run.sh --set-password</code>.</p>
+        <div class="sub-h">External triggers</div>
+        <p class="muted small">Doorbells, alarm panels or Home Assistant calling <code>POST /api/hooks/&lt;camera&gt;</code> must send
+          <code>Authorization: Bearer &lt;token&gt;</code>. <span id="acct-hook-state"></span></p>
+        <div class="row"><button type="button" id="acct-hook-new">Generate token</button>
+          <button type="button" id="acct-hook-revoke" class="danger hidden">Revoke</button></div>
+        <p id="acct-token-box" class="small hidden">Copy it now — it won't be shown again:<br><code id="acct-token"></code></p>
       </div>
       <p class="muted small" id="cfg-path"></p>
     </div>

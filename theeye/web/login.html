@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="same-origin">
+<title>Sign in · TheEye</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="login-page">
+<main class="login-box">
+  <div class="brand">◉ TheEye</div>
+  <h1 id="lg-title">Sign in</h1>
+  <p id="lg-intro" class="muted small hidden"></p>
+  <form id="lg-form" class="hidden" autocomplete="on">
+    <label>Username <input name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required maxlength="64"></label>
+    <label>Password <input name="password" type="password" autocomplete="current-password" required maxlength="256"></label>
+    <label id="lg-repeat" class="hidden">Repeat password <input name="repeat" type="password" autocomplete="new-password" maxlength="256"></label>
+    <label id="lg-remember" class="row"><input type="checkbox" name="remember"> Keep me signed in for 30 days</label>
+    <button type="submit" id="lg-submit">Sign in</button>
+    <p id="lg-err" class="err" role="alert"></p>
+  </form>
+</main>
+<script src="login.js"></script>
+</body>
+</html>

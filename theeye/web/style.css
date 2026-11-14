@@ -218,3 +218,15 @@ button.ov[aria-pressed="true"] { color: var(--text); border-color: var(--accent)
 .table.stor td.bar { width: 25%; min-width: 60px; }
 .table.stor td.bar i { display: block; height: 8px; border-radius: 4px; background: var(--accent); min-width: 2px; }
 .table.stor tfoot th { border-top: 2px solid var(--line); border-bottom: 0; }
+
+/* sign-in page */
+.login-page { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.login-box { width: 100%; max-width: 360px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 24px; }
+.login-box h1 { font-size: 18px; margin: 12px 0; }
+.login-box form { display: flex; flex-direction: column; gap: 12px; }
+.login-box label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.login-box label.row { flex-direction: row; align-items: center; gap: 8px; }
+.login-box .err { color: var(--danger); margin: 0; min-height: 1em; }
+#acct-token { font-family: ui-monospace, monospace; word-break: break-all; user-select: all; }
+#acct-pw-msg.err { color: var(--danger); } #acct-pw-msg.ok { color: var(--ok); }
+#logout { padding: 4px 10px; font-size: 12px; }

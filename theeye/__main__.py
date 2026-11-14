@@ -17,7 +17,14 @@ def main() -> None:
     ap = argparse.ArgumentParser(prog="theeye")
     ap.add_argument("-c", "--config", default="config.yaml")
     ap.add_argument("-v", "--verbose", action="store_true")
+    ap.add_argument("--set-password", action="store_true", help="create the web login, or reset its password")
     args = ap.parse_args()
+    if args.set_password:
+        from .auth import set_password_cli
+        cfg_path = Path(args.config).resolve()
+        db = Path(load_config(cfg_path).storage.path)
+        set_password_cli(cfg_path.parent / "auth.json", (cfg_path.parent / db if not db.is_absolute() else db) / "theeye.db")
+        return
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
     logging.getLogger("libav").setLevel(logging.ERROR)

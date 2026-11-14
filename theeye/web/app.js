@@ -4,6 +4,7 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const api = async (path, opts = {}) => {
   const r = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts,
     body: opts.body && typeof opts.body !== 'string' ? JSON.stringify(opts.body) : opts.body });
+  if (r.status === 401) { location.replace('/login'); throw new Error('Signed out'); }
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
   return r.json();
 };
@@ -844,7 +845,7 @@ async function initSetup(force = false) {
   if (!S.cfg.cameras.length) S.open.add(0);
   openPending();
   if (!r.exists) banner('info', `No configuration file yet — fill in the form and save to create <code>${esc(r.path)}</code>.`);
-  renderSetup(); loadLlmModels(); loadStorage();
+  renderSetup(); loadLlmModels(); loadStorage(); loadAccount();
 }
 function openPending() {
   if (!S.pendingOpen) return;
@@ -1168,6 +1169,38 @@ async function loadStorage(refresh = false) {
       Snapshots aren't counted toward the clip limit.</p>`;
 }
 $('#cfg-storage-refresh').onclick = () => loadStorage(true);
+
+// ------------------------------------------------------------ account (sign-in)
+const errText = e => { const m = String(e.message).match(/^\d+ (.*)$/s); try { return JSON.parse(m[1]).detail; } catch { return e.message; } };
+async function loadAccount() {
+  const s = await api('/api/auth/state');
+  $('#acct-user').textContent = s.username || '';
+  $('#acct-hook-state').textContent = s.hook_token ? 'A token is set. Generating a new one replaces it.' : 'No token: external triggers are refused.';
+  $('#acct-hook-revoke').classList.toggle('hidden', !s.hook_token);
+}
+$('#acct-pw-form').onsubmit = async e => {
+  e.preventDefault();
+  const f = e.target, msg = $('#acct-pw-msg');
+  msg.className = 'small'; msg.textContent = '';
+  if (f.new.value !== f.repeat.value) { msg.className = 'small err'; msg.textContent = "The new passwords don't match."; return; }
+  try {
+    await api('/api/auth/password', { method: 'POST', body: { current: f.current.value, new: f.new.value } });
+    f.reset(); msg.className = 'small ok'; msg.textContent = 'Password changed. Other devices were signed out.';
+  } catch (x) { msg.className = 'small err'; msg.textContent = errText(x); }
+};
+$('#acct-logout-all').onclick = async () => {
+  await api('/api/auth/logout-all', { method: 'POST' });
+  $('#acct-pw-msg').className = 'small ok'; $('#acct-pw-msg').textContent = 'All other devices were signed out.';
+};
+$('#acct-hook-new').onclick = async () => {
+  const { token } = await api('/api/auth/hook-token', { method: 'POST' });
+  $('#acct-token').textContent = token; $('#acct-token-box').classList.remove('hidden'); loadAccount();
+};
+$('#acct-hook-revoke').onclick = async () => {
+  await api('/api/auth/hook-token', { method: 'DELETE' });
+  $('#acct-token-box').classList.add('hidden'); loadAccount();
+};
+$('#logout').onclick = async () => { await api('/api/auth/logout', { method: 'POST' }).catch(() => {}); location.replace('/login'); };
 
 async function loadLlmModels() {
   const sel = $('#cfg-llm-model'), st = $('#cfg-llm-status');

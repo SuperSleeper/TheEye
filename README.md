@@ -47,6 +47,7 @@ or `./run.sh /some/other/folder`, or `THEEYE_HOME=...`). Everything private live
   config.yaml   cameras, logins, passwords (created from config.example.yaml on first run; edit on the Setup tab)
   data/         database, clips, snapshots
   tls/          self-signed HTTPS certificate and its private key (created on first start)
+  auth.json     web login: username + salted scrypt hash of the password (never the password itself)
   yolo11s.pt    model weights (downloaded on first run)
 ```
 
@@ -59,6 +60,19 @@ The web UI is served over **HTTPS** with a self-signed certificate made for this
 (renewed automatically when they change or it nears expiry). Browsers warn the first time: choose *Advanced → Proceed*,
 or import `tls/cert.pem` into your browser/OS as trusted to remove the warning. To use your own certificate, set
 `server.cert_file` / `server.key_file`; to turn HTTPS off, untick it on the Setup tab (or `server.https: false`).
+
+### Sign-in
+
+The web UI asks for a username and password. Create the login the first time by opening the UI **on the TheEye
+computer itself** (`https://localhost:8080`; other devices can't create it), or with `./run.sh --set-password`, which
+also resets a forgotten password and signs everyone out. Change it later under Setup → Sign-in.
+
+- Passwords are stored only as a salted scrypt hash in `auth.json` (install folder, mode 600).
+- Sessions use a random token in an `HttpOnly`, `Secure`, `SameSite=Strict` cookie; the database keeps only its hash.
+  "Keep me signed in" lasts 30 days, otherwise until the browser closes (at most 12 h).
+- After 5 wrong passwords an address is locked out for 30 s, doubling each time up to 1 h.
+- Changing the password signs out every other device; Setup also has "Sign out all other devices".
+- Requests that change something are refused unless they come from TheEye's own pages.
 
 ### Keeping credentials out of git
 
@@ -99,7 +113,7 @@ Check the whole history any time with `.githooks/check-secrets main`.
 | `GET/POST/PUT/DELETE /api/zones`, `/api/rules` | zone and rule management |
 | `GET /api/events`, `/api/events/{id}` | events with linked triggers and detections |
 | `POST /api/events/manual` `{camera_id, duration, preroll}` | record now |
-| `POST /api/hooks/{camera_id}?duration=30` | external trigger (doorbell, alarm panel, Home Assistant) |
+| `POST /api/hooks/{camera_id}?duration=30` | external trigger (doorbell, alarm panel, Home Assistant); send `Authorization: Bearer <token>` from Setup → Sign-in |
 | `GET /api/triggers`, `/api/detections` | raw motion log and objects |
 | `POST /api/search` `{q}` | natural-language search |
 
