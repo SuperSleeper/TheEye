@@ -248,8 +248,13 @@
 </div>
 
 <dialog id="player">
-  <div class="player-head"><b id="pl-title"></b><button id="pl-close">✕</button></div>
-  <video id="pl-video" controls playsinline></video>
+  <div class="player-head"><b id="pl-title"></b>
+    <span class="pl-nav"><span id="pl-pos" class="muted small"></span><button id="pl-close">✕</button></span></div>
+  <div class="pl-stage">
+    <video id="pl-video" controls playsinline></video>
+    <button type="button" class="pl-arrow left" id="pl-prev" title="Earlier event (←)" aria-label="Earlier event">‹</button>
+    <button type="button" class="pl-arrow right" id="pl-next" title="Later event (→)" aria-label="Later event">›</button>
+  </div>
   <div id="pl-info"></div>
 </dialog>
 

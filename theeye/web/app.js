@@ -331,12 +331,36 @@ async function loadEvents() {
         <div class="chips">${e.labels.map(l => `<span class="chip">${esc(l)}</span>`).join('')}${e.plates.map(p => `<span class="chip plate">${esc(p)}</span>`).join('')}</div>
       </div>
     </div>`).join('') || '<p class="muted">No events yet.</p>';
+  EV.list = evs.map(e => e.id);                          // newest first, as shown; arrows walk this list
   $$('#ev-list .card').forEach(c => c.onclick = () => openEvent(+c.dataset.id));
 }
 $('#ev-refresh').onclick = loadEvents; $('#ev-cam').onchange = loadEvents;
 
+// Previous/next in the Events list. The list is newest-first, so "earlier" is the next index.
+const EV = { list: [], cur: null };
+function eventNav() {
+  const i = EV.list.indexOf(EV.cur);
+  return { i, earlier: i >= 0 ? EV.list[i + 1] : undefined, later: i > 0 ? EV.list[i - 1] : undefined };
+}
+function updateEventNav() {
+  const n = eventNav();
+  $('#pl-prev').disabled = !n.earlier; $('#pl-next').disabled = !n.later;
+  $('#pl-pos').textContent = n.i >= 0 ? `${EV.list.length - n.i} / ${EV.list.length}` : '';
+  $('#pl-prev').hidden = $('#pl-next').hidden = n.i < 0;   // opened from Search: not part of the list
+}
+$('#pl-prev').onclick = () => { const n = eventNav(); if (n.earlier) openEvent(n.earlier); };
+$('#pl-next').onclick = () => { const n = eventNav(); if (n.later) openEvent(n.later); };
+$('#player').addEventListener('keydown', e => {
+  if (e.target.matches('input, textarea, select') || e.altKey || e.ctrlKey || e.metaKey) return;
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    e.preventDefault();                                   // instead of the video's own 5 s seek
+    $(e.key === 'ArrowLeft' ? '#pl-prev' : '#pl-next').click();
+  }
+});
 async function openEvent(id, seek) {
+  EV.cur = id; updateEventNav();
   const e = await api(`/api/events/${id}`);
+  if (EV.cur !== id) return;                              // stepped on to another event meanwhile
   $('#pl-title').textContent = `${camName(e.camera_id)} — ${fmtTime(e.start_ts)} — ${e.rule_name || e.source}`;
   const v = $('#pl-video');
   if (e.clip_path) {
@@ -360,7 +384,7 @@ async function openEvent(id, seek) {
     $('#pl-act').onclick = () => { v.currentTime = e.play_from ?? e.clip_offset; v.play(); };
   }
   $('#pl-del').onclick = async () => { await api(`/api/events/${id}`, { method: 'DELETE' }); $('#player').close(); loadEvents(); };
-  $('#player').showModal();
+  if (!$('#player').open) $('#player').showModal();
 }
 $('#pl-close').onclick = () => $('#player').close();
 $('#player').addEventListener('close', () => $('#pl-video').pause());

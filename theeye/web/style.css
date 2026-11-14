@@ -157,3 +157,12 @@ body:has(.drag-ghost) { cursor: grabbing; user-select: none; }
 .focus-bar .spacer { flex: 1; }
 .focus-bar button.on { border-color: var(--accent); color: var(--accent); }
 .tile > div:first-child { cursor: zoom-in; }
+
+/* event player: previous/next arrows over the video */
+.pl-stage { position: relative; }
+.pl-nav { display: flex; align-items: center; gap: 10px; }
+.pl-arrow { position: absolute; top: 50%; transform: translateY(-60%); width: 44px; height: 72px; font-size: 40px; line-height: 1;
+  padding: 0; border: 0; border-radius: 8px; background: #0007; color: #fff; opacity: .55; transition: opacity .15s; }
+.pl-arrow:hover:not(:disabled) { opacity: 1; background: #000a; }
+.pl-arrow:disabled { opacity: .12; cursor: default; }
+.pl-arrow.left { left: 8px; } .pl-arrow.right { right: 8px; }
