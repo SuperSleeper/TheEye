@@ -137,6 +137,7 @@ class DB:
         with self.lock:
             self.conn.executescript(SCHEMA)
             self._add_columns()
+            self._migrate()
 
     # Columns added after the first release. CREATE TABLE IF NOT EXISTS won't add them to existing DBs.
     ADDED_COLUMNS = {
@@ -149,9 +150,16 @@ class DB:
         },
         "detections": {
             "vehicle_id": "INTEGER",                      # repeat-vehicle tracking
-            "moving": "INTEGER",                          # was seen moving (NULL = recorded before this was stored)
+            "moving": "INTEGER",                          # box travelled during the track (NULL = not recorded)
         },
     }
+
+    def _migrate(self) -> None:
+        v = self.conn.execute("PRAGMA user_version").fetchone()[0]
+        if v < 1:   # vehicle tracking first counted parked cars (motion over them) as moving: re-seed from history
+            self.conn.execute("DELETE FROM vehicles")
+            self.conn.execute("UPDATE detections SET vehicle_id = NULL, moving = NULL")
+            self.conn.execute("PRAGMA user_version = 1")
 
     def _add_columns(self) -> None:
         for table, cols in self.ADDED_COLUMNS.items():

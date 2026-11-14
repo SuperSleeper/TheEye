@@ -431,7 +431,7 @@ async function loadVehicles() {
   $$('#veh-filter button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.s === VH.status)));
   const r = await api(`/api/vehicles?status=${VH.status}`);
   updateVehicleBadge(r.counts);
-  $('#veh-help').textContent = `A vehicle seen moving on ${r.repeat_visits} separate visits (30+ min apart) is flagged. ` +
+  $('#veh-help').textContent = `A vehicle seen driving on ${r.repeat_visits} separate visits (30+ min apart) is flagged; parked cars don't count. ` +
     'Matched by licence plate when readable, otherwise by appearance, so two identical cars can be merged. Mark your own cars as Known.';
   $('#veh-list').innerHTML = r.vehicles.map(v => `
     <div class="card veh ${v.status}" data-id="${v.id}">

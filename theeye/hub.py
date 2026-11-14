@@ -256,8 +256,8 @@ class Hub:
             "UPDATE detections SET confidence=?, last_ts=?, bbox=?, zones=?, plate=?, plate_conf=?,"
             " snapshot_path=COALESCE(?, snapshot_path), embedding=COALESCE(?, embedding), moving=? WHERE id=?",
             (t.best_conf, t.last_ts, json.dumps(t.best_bbox), json.dumps(sorted(t.zones)), t.plate,
-             t.plate_conf or None, snap, emb, int(t.seen_moving), t.db_id))
-        if self.vehicles.eligible(t.label, t.best_bbox, t.seen_moving):
+             t.plate_conf or None, snap, emb, int(t.travelled), t.db_id))
+        if self.vehicles.eligible(t.label, t.best_bbox, t.travelled):
             try:
                 self.vehicles.observe(t.db_id, t.camera_id, t.label, t.first_ts, t.last_ts, emb, t.plate,
                                       t.plate_conf, snap)

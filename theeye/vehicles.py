@@ -1,6 +1,6 @@
 """Repeat-vehicle tracking.
 
-Each moving vehicle sighting (a finished detection track) is matched to a known vehicle by licence
+Each travelling vehicle sighting (a finished detection track whose box drove somewhere; parked cars never count) is matched to a known vehicle by licence
 plate when one was read confidently, otherwise by appearance (CLIP embedding of the best crop).
 Sightings of the same vehicle more than `visit_gap_minutes` apart count as separate visits; a vehicle
 reaching `repeat_visits` is flagged. Vehicles marked "known" (your own cars, neighbours) never flag.
@@ -137,17 +137,49 @@ class VehicleRegistry:
                             (status, v.visits, note, vid))
 
     def backfill(self) -> int:
-        """Seed from detections recorded before this feature (movement wasn't stored then, so all count)."""
+        """Seed from past detections. Ones recorded with travel info use it; older ones didn't store it, so a
+        box that sits where vehicles were also seen on PARKED_REPEATS other visits is taken as a parked car."""
         rows = self.db.all("SELECT id, camera_id, label, first_ts, last_ts, bbox, embedding, plate, plate_conf,"
-                           " snapshot_path FROM detections WHERE vehicle_id IS NULL AND last_ts IS NOT NULL"
+                           " snapshot_path, moving FROM detections WHERE vehicle_id IS NULL AND last_ts IS NOT NULL"
                            " ORDER BY first_ts")
+        rows = [r for r in rows if r["label"] in self.cfg.labels]
+        parked = _parked_spots(rows, self.cfg.visit_gap_minutes * 60)
         n = 0
         for r in rows:
-            if self.eligible(r["label"], jload(r["bbox"], []), True):
+            moving = bool(r["moving"]) if r["moving"] is not None else r["id"] not in parked
+            if self.eligible(r["label"], jload(r["bbox"], []), moving):
                 if self.observe(r["id"], r["camera_id"], r["label"], r["first_ts"], r["last_ts"], r["embedding"],
                                 r["plate"], r["plate_conf"] or 0.0, r["snapshot_path"]):
                     n += 1
         return n
+
+
+PARKED_IOU = 0.8          # boxes overlapping this much are the same spot
+PARKED_REPEATS = 2        # seen in the same spot on this many other visits: a parking spot, not a passing car
+
+
+def _parked_spots(rows: list, gap_s: float) -> set[int]:
+    """Ids of detections without travel info whose box recurs at the same spot on other visits."""
+    by_cam: dict[str, list] = {}
+    for r in rows:
+        b = jload(r["bbox"], [])
+        if len(b) == 4:
+            by_cam.setdefault(r["camera_id"], []).append((r, b))
+    out: set[int] = set()
+    for items in by_cam.values():
+        B = np.array([b for _, b in items], dtype=np.float32)
+        T = np.array([r["first_ts"] for r, _ in items])
+        area = (B[:, 2] - B[:, 0]) * (B[:, 3] - B[:, 1])
+        for k, (r, b) in enumerate(items):
+            if r["moving"] is not None:
+                continue
+            iw = np.clip(np.minimum(b[2], B[:, 2]) - np.maximum(b[0], B[:, 0]), 0, None)
+            ih = np.clip(np.minimum(b[3], B[:, 3]) - np.maximum(b[1], B[:, 1]), 0, None)
+            inter = iw * ih
+            iou = inter / np.maximum(area[k] + area - inter, 1e-9)
+            if int(((iou >= PARKED_IOU) & (np.abs(T - T[k]) > gap_s)).sum()) >= PARKED_REPEATS:
+                out.add(r["id"])
+    return out
 
 
 def _close_plates(a: str, b: str) -> bool:

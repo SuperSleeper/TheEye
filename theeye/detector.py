@@ -29,6 +29,7 @@ STILL_OK = VEHICLES | {"bicycle", "suitcase", "backpack", "handbag"}
 TRACK_TTL = 3.0          # seconds unseen before a track is finalized
 PLATE_RETRY_MAX_S = 30.0          # slowest retry for a vehicle whose plate hasn't read confidently
 IOU_MATCH = 0.3
+TRAVEL_IOU = 0.5         # box overlap with where the track began; below this it has actually driven somewhere
 PARK_IOU = 0.8           # box overlap with where it last moved; above this counts as "hasn't moved"
 PARK_MEMORY_S = 600.0    # remember parked spots this long, so a briefly occluded parked car stays parked
 
@@ -57,6 +58,9 @@ class Track:
     still_since: float = 0.0
     parked: bool = False             # hasn't moved for detector.stationary_seconds: rules ignore it
     seen_moving: bool = False        # motion seen inside its box at some point (sticky for the track)
+    start_bbox: list[float] = field(default_factory=list)   # where the track began
+    travelled: bool = False          # the box itself left its starting spot (a parked car with a shadow or a
+                                     # passer-by over it is "seen moving" but never travels)
     confirmed: bool = True           # counts for rules: seen moving, or motion confirmation is off
     announced: bool = False          # reported to the hub (Live, DB, search); withheld until plausible
     visible: bool = False            # currently shown/considered at all (see Detector._handle)
@@ -238,13 +242,15 @@ class Detector:
             if best is None:
                 self._seq += 1
                 best = Track(f"{cam}:{int(ts)}:{self._seq}", cam, label, nb, conf, ts, ts)
-                best.still_bbox, best.still_since = nb, ts
+                best.still_bbox, best.still_since, best.start_bbox = nb, ts, nb
                 if self._was_parked_here(cam, label, nb, ts):   # reappeared in a known parked spot
                     best.still_since = ts - self.cfg.stationary_seconds
                 cam_tracks[best.key] = best
             else:
                 unmatched.discard(best.key)
             best.bbox, best.conf, best.last_ts, best.hits = nb, conf, ts, best.hits + 1
+            if not best.travelled and _iou(best.start_bbox, nb) < TRAVEL_IOU:
+                best.travelled = True
             if _iou(best.still_bbox, nb) < PARK_IOU:          # it moved: restart the stillness clock
                 best.still_bbox, best.still_since = nb, ts
             best.parked = self.cfg.stationary_seconds > 0 and ts - best.still_since >= self.cfg.stationary_seconds
