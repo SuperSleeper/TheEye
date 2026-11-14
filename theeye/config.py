@@ -102,6 +102,9 @@ class CameraConfig(BaseModel):
     detect_fps: float = 3.0            # frames/s pushed to the object detector while active
     always_detect: bool = False        # run detector even without motion
     record_audio: bool = True          # include the camera's audio track in clips
+    sound_detect: bool = False         # a sound louder than sound_threshold_db starts an event (recording)
+    sound_threshold_db: float = Field(-30.0, ge=-90, le=0)     # dBFS; 0 = loudest the mic can record
+    sound_min_seconds: float = Field(0.5, ge=0.1, le=60)       # must stay that loud this long
 
     @model_validator(mode="after")
     def _derive_urls(self) -> "CameraConfig":

@@ -209,3 +209,12 @@ button.ov[aria-pressed="true"] { color: var(--text); border-color: var(--accent)
 .veh.flagged { border-color: var(--danger); }
 .veh .status { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--panel2); }
 .veh.flagged .status { background: var(--danger); color: #fff; }
+
+/* Setup → Storage: disk usage per camera */
+.sub-row { margin: 14px 0 0; } .sub-row .sub-h { margin: 0; }
+.tscroll { overflow-x: auto; margin: 8px 0 4px; }
+.table.stor { white-space: nowrap; }
+.table.stor .num { text-align: right; font-variant-numeric: tabular-nums; }
+.table.stor td.bar { width: 25%; min-width: 60px; }
+.table.stor td.bar i { display: block; height: 8px; border-radius: 4px; background: var(--accent); min-width: 2px; }
+.table.stor tfoot th { border-top: 2px solid var(--line); border-bottom: 0; }

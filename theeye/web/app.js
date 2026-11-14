@@ -539,6 +539,7 @@ async function loadSound() {
   for (const c of cams) {
     const thr = rules.filter(r => r.enabled && (r.camera_id === '*' || r.camera_id === c.id))
       .flatMap(r => r.conditions.filter(k => k.type === 'sound').map(k => ({ db: k.min_db ?? -30, name: r.name })));
+    if (c.sound_threshold_db != null) thr.push({ db: c.sound_threshold_db, name: 'Sound detection' });
     drawSoundChart($(`#snd-charts .snd-card[data-cam="${CSS.escape(c.id)}"]`), c, data.cameras[c.id] || [], thr, data);
   }
 }
@@ -843,7 +844,7 @@ async function initSetup(force = false) {
   if (!S.cfg.cameras.length) S.open.add(0);
   openPending();
   if (!r.exists) banner('info', `No configuration file yet — fill in the form and save to create <code>${esc(r.path)}</code>.`);
-  renderSetup(); loadLlmModels();
+  renderSetup(); loadLlmModels(); loadStorage();
 }
 function openPending() {
   if (!S.pendingOpen) return;
@@ -1002,9 +1003,24 @@ function camEditor(c, i) {
       <label class="row"><input type="checkbox" data-ck="record_audio" ${c.record_audio !== false ? 'checked' : ''}> Record audio
         <span class="small muted">— check local laws; some places require consent to record conversations</span></label>
     </div>
+    <div class="sub-h">Sound detection</div>
+    <div class="fgrid">
+      <label class="row"><input type="checkbox" data-ck="sound_detect" ${c.sound_detect ? 'checked' : ''}> Start an event (and recording) on loud sound</label>
+      <label>Volume threshold (dB) <input type="number" min="-90" max="0" step="1" data-ck="sound_threshold_db" data-num value="${c.sound_threshold_db ?? -30}">
+        <span class="small muted">${soundHint(c)}</span></label>
+      <label>Loud for at least (seconds) <input type="number" min="0.1" max="60" step="0.1" data-ck="sound_min_seconds" data-num value="${c.sound_min_seconds ?? 0.5}">
+        <span class="small muted">ignores single clicks and pops</span></label>
+    </div>
     <div class="row"><button type="button" data-dup title="Copy this camera's settings into a new camera">⧉ Duplicate</button>
       <button type="button" class="danger" data-remove>Remove camera</button></div>
   </div>`;
+}
+
+function soundHint(c) {
+  const live = cameras.find(x => x.id === (c.orig_id || c.id));
+  if (live && !live.has_audio) return '<span class="warn">this camera isn\'t sending audio</span>';
+  const now = live?.sound_db != null ? `right now ${Math.round(live.sound_db)} dB. ` : '';
+  return `0 = loudest the mic can record; quieter is more negative. ${now}Pick a level above the camera's normal background (Motion log → Sound levels).`;
 }
 
 function loginFields(c) {
@@ -1118,6 +1134,40 @@ function renderRam() {
     ${over ? '<span class="warn"> — over budget: oldest footage will be trimmed early, so loops will be shorter than configured</span>' : ''}
     ${sys && budget > sys * 0.75 ? '<span class="warn"> — budget is above 75% of system RAM</span>' : ''}</div>`;
 }
+
+// ---- disk usage per camera (Setup → Storage)
+async function loadStorage(refresh = false) {
+  const box = $('#cfg-storage');
+  box.innerHTML = '<p class="muted small">Measuring…</p>';
+  let r;
+  try { r = await api(`/api/storage${refresh ? '?refresh=1' : ''}`); }
+  catch (e) { box.innerHTML = `<p class="warn small">Couldn't measure storage: ${esc(e.message)}</p>`; return; }
+  const max = Math.max(1, ...r.cameras.map(c => c.total_bytes));
+  const days = t => t ? `${Math.max(0, (Date.now() / 1000 - t) / 86400).toFixed(1)} days` : '—';
+  const lim = r.clip_limit_bytes, used = r.clips_bytes;
+  box.innerHTML = `
+    <div class="rambar" title="Clips vs the clip limit"><span style="width:${Math.min(100, used / lim * 100).toFixed(1)}%;background:${used > lim * 0.9 ? '#ffd60a' : 'var(--accent)'}"></span></div>
+    <div class="small">Clips use <b>${fmtBytes(used)}</b> of the ${fmtBytes(lim)} limit${used > lim * 0.9 ? ' <span class="warn">— nearly full: oldest clips are being deleted</span>' : ''}
+      · everything in the data folder <b>${fmtBytes(r.total_bytes)}</b> · disk free ${fmtBytes(r.disk_free)} of ${fmtBytes(r.disk_total)}</div>
+    <div class="tscroll"><table class="table stor">
+      <thead><tr><th>Camera</th><th class="num">Clips</th><th class="num">Snapshots</th><th class="num">Total</th><th></th><th class="num">Oldest clip</th><th class="num">RAM loop now</th></tr></thead>
+      <tbody>${r.cameras.map(c => `<tr>
+        <td>${esc(c.name)}${c.configured ? '' : ' <span class="badge">removed</span>'}</td>
+        <td class="num">${fmtBytes(c.clips_bytes)} <span class="muted">· ${c.clips}</span></td>
+        <td class="num">${fmtBytes(c.snaps_bytes)} <span class="muted">· ${c.snaps}</span></td>
+        <td class="num"><b>${fmtBytes(c.total_bytes)}</b></td>
+        <td class="bar"><i style="width:${(c.total_bytes / max * 100).toFixed(1)}%"></i></td>
+        <td class="num">${days(c.oldest_clip)}</td>
+        <td class="num">${c.ram_bytes ? fmtBytes(c.ram_bytes) : '—'}</td></tr>`).join('')}
+        <tr class="muted"><td>Database</td><td></td><td></td><td class="num">${fmtBytes(r.database_bytes)}</td><td></td><td></td><td></td></tr>
+      </tbody>
+      <tfoot><tr><th>Total</th><th class="num">${fmtBytes(r.clips_bytes)}</th><th class="num">${fmtBytes(r.cameras.reduce((a, c) => a + c.snaps_bytes, 0))}</th>
+        <th class="num">${fmtBytes(r.total_bytes)}</th><th></th><th></th><th class="num">${fmtBytes(r.cameras.reduce((a, c) => a + c.ram_bytes, 0))}</th></tr></tfoot>
+    </table></div>
+    <p class="small muted">Measured ${fmtTime(r.time)} in <code>${esc(r.path)}</code>. "Oldest clip" is how far back recordings go for that camera.
+      Snapshots aren't counted toward the clip limit.</p>`;
+}
+$('#cfg-storage-refresh').onclick = () => loadStorage(true);
 
 async function loadLlmModels() {
   const sel = $('#cfg-llm-model'), st = $('#cfg-llm-status');

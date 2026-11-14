@@ -30,7 +30,7 @@ from .embeddings import Embedder
 from .motion import MotionEngine, Zone
 from .recorder import RecordingManager
 from .vehicles import VehicleRegistry
-from .rules import CamState, Rule, evaluate
+from .rules import CamState, Rule, evaluate, is_loud
 
 log = logging.getLogger("theeye.hub")
 
@@ -133,8 +133,10 @@ class Hub:
         n = max(1, len(wanted))
         per_cam = int(new.storage.ram_budget_gb * 1e9 / n)
         for cid in list(self.cams):
-            if cid not in wanted or wanted[cid] != self.cams[cid].cfg:
+            if cid not in wanted or _stream_cfg(wanted[cid]) != _stream_cfg(self.cams[cid].cfg):
                 self._remove_camera(cid)
+            else:
+                self.cams[cid].cfg = wanted[cid]           # e.g. sound settings: apply without reconnecting
         for cid, ccfg in wanted.items():
             if cid not in self.cams:
                 cam = Camera(ccfg, per_cam)
@@ -305,13 +307,20 @@ class Hub:
             fired, reasons = evaluate(rule, st)
             if fired:
                 self._activate(cam, rule, now, st)
+        c = self.cams.get(cam)
+        if c and c.cfg.sound_detect and is_loud(st, c.cfg.sound_threshold_db, c.cfg.sound_min_seconds):
+            self._activate(cam, self.SOUND_RULE, now, st)
+
+    # Per-camera sound detection (Setup) opens events like a rule would; it has no rules-table row.
+    SOUND_RULE = Rule(id=-1, name="Loud sound", preroll=5, postroll=10, max_length=300)
 
     def _activate(self, cam: str, rule: Rule, now: float, st: CamState) -> None:
         key = (cam, rule.id)
+        builtin = rule is self.SOUND_RULE
         with self._lock:
             ev = self._open_events.get(key)
             if ev is None:
-                ev = self._open_event(cam, rule.id, "rule", now, rule.preroll, rule.postroll,
+                ev = self._open_event(cam, None if builtin else rule.id, "sound" if builtin else "rule", now, rule.preroll, rule.postroll,
                                       rule.max_length, rule.record, rule.name)
                 self._open_events[key] = ev
                 if rule.webhook:
@@ -495,6 +504,11 @@ class Hub:
 
 
 TRACK_GRACE = 3.0
+LIVE_CAM_KEYS = {"sound_detect", "sound_threshold_db", "sound_min_seconds"}   # change without reconnecting
+
+
+def _stream_cfg(c) -> dict:
+    return c.model_dump(exclude=LIVE_CAM_KEYS)
 
 
 def object_thumb(frame: Optional[np.ndarray], bbox: list[float], out_w: int = 640, out_h: int = 360) -> Optional[np.ndarray]:

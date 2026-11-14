@@ -18,6 +18,49 @@ from .db import jload
 from .hub import Hub
 from .search import Searcher
 
+
+def _du(root: Path) -> tuple[int, int, Optional[float]]:
+    """(bytes, files, oldest mtime) under root."""
+    size = n = 0
+    oldest: Optional[float] = None
+    for p in root.rglob("*"):
+        try:
+            st = p.stat()
+        except OSError:                  # deleted by retention while walking
+            continue
+        if p.is_file():
+            size += st.st_size
+            n += 1
+            oldest = st.st_mtime if oldest is None else min(oldest, st.st_mtime)
+    return size, n, oldest
+
+
+def _storage_scan(data: Path, hub: Hub) -> dict:
+    import shutil
+    names = {c.id: c.name or c.id for c in hub.cfg.cameras}
+    ids = set(names)
+    for sub in ("clips", "snaps"):
+        if (data / sub).is_dir():
+            ids |= {p.name for p in (data / sub).iterdir() if p.is_dir()}
+    cams = []
+    for cid in ids:
+        clips, nclips, oldest = _du(data / "clips" / cid)
+        snaps, nsnaps, _ = _du(data / "snaps" / cid)
+        cam = hub.cams.get(cid)
+        cams.append({"id": cid, "name": names.get(cid, cid), "configured": cid in names,
+                     "clips_bytes": clips, "clips": nclips, "oldest_clip": oldest,
+                     "snaps_bytes": snaps, "snaps": nsnaps, "total_bytes": clips + snaps,
+                     "ram_bytes": cam.ring.stats["bytes"] if cam else 0})
+    cams.sort(key=lambda r: -r["total_bytes"])
+    db_bytes = sum(p.stat().st_size for p in data.glob("theeye.db*") if p.is_file())
+    files = sum(r["total_bytes"] for r in cams)
+    other = sum(p.stat().st_size for p in data.iterdir() if p.is_file() and not p.name.startswith("theeye.db"))
+    disk = shutil.disk_usage(data)
+    return {"time": time.time(), "path": str(data), "cameras": cams, "database_bytes": db_bytes,
+            "other_bytes": other, "clips_bytes": sum(r["clips_bytes"] for r in cams),
+            "total_bytes": files + db_bytes + other, "clip_limit_bytes": hub.cfg.storage.max_gb * 1e9,
+            "disk_total": disk.total, "disk_free": disk.free}
+
 WEB = Path(__file__).parent / "web"
 
 
@@ -81,7 +124,8 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         cams = sorted(hub.cams.values(), key=lambda c: order.get(c.id, len(order)))
         return [{"id": c.id, "name": c.cfg.name or c.id, "status": c.status, "ring": c.ring.stats,
                  "ring_seconds": c.cfg.ring_seconds, "has_audio": c.has_audio,
-                 "sound_db": c.sound_db if time.time() - c.sound_ts < 2 else None} for c in cams]
+                 "sound_db": c.sound_db if time.time() - c.sound_ts < 2 else None,
+                 "sound_threshold_db": c.cfg.sound_threshold_db if c.cfg.sound_detect else None} for c in cams]
 
     @app.get("/api/sound")
     def sound(camera_id: Optional[str] = None, hours: float = Query(6, gt=0, le=168)):
@@ -371,6 +415,16 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         return {"ok": True}
 
     # --------------------------------------------------------------- misc
+    _storage_cache: dict[str, Any] = {}
+
+    @app.get("/api/storage")
+    async def storage(refresh: bool = False):
+        """Disk used per camera (clips, snapshots) and in total. Walking the folders takes a moment, so cached 60 s."""
+        c = _storage_cache.get("v")
+        if refresh or not c or time.time() - c["time"] > 60:
+            c = _storage_cache["v"] = await asyncio.to_thread(_storage_scan, data, hub)
+        return c
+
     @app.get("/api/stats")
     def stats():
         return hub.stats() | {"time": time.time()}

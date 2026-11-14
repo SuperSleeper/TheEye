@@ -67,6 +67,15 @@ class CamState:
     now: float = 0.0
 
 
+def is_loud(st: CamState, min_db: float, min_seconds: float) -> bool:
+    """Louder than min_db for most of the last min_seconds (tolerates a quiet blip), with samples covering the span."""
+    need = max(0.1, min_seconds)
+    now = st.now or (st.sound[-1][0] if st.sound else 0.0)
+    win = [(ts, db) for ts, db in st.sound if ts >= now - need]
+    return (bool(win) and win[0][0] <= now - need + 0.25
+            and sum(db >= min_db for _, db in win) >= 0.7 * len(win))
+
+
 def evaluate(rule: Rule, st: CamState) -> tuple[bool, list[str]]:
     """Returns (fired, reasons)."""
     results: list[tuple[bool, str]] = []
@@ -95,13 +104,7 @@ def evaluate(rule: Rule, st: CamState) -> tuple[bool, list[str]]:
             results.append((bool(hits), f"plate {','.join(hits)}" if hits else "plate"))
         elif typ == "sound":
             thr = float(c.get("min_db", -30))
-            need = max(0.1, float(c.get("min_seconds", 0.5)))
-            now = st.now or (st.sound[-1][0] if st.sound else 0.0)
-            win = [(ts, db) for ts, db in st.sound if ts >= now - need]
-            # loud for most of the span (tolerates a quiet blip), and the samples really cover the span
-            ok = (bool(win) and win[0][0] <= now - need + 0.25
-                  and sum(db >= thr for _, db in win) >= 0.7 * len(win))
-            results.append((ok, f"sound >= {thr:g} dB"))
+            results.append((is_loud(st, thr, float(c.get("min_seconds", 0.5))), f"sound >= {thr:g} dB"))
         else:
             results.append((False, f"unknown:{typ}"))
     if not results:
