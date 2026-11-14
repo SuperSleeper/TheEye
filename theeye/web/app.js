@@ -345,25 +345,35 @@ async function loadEvents() {
         <div class="chips">${e.labels.map(l => `<span class="chip">${esc(l)}</span>`).join('')}${e.plates.map(p => `<span class="chip plate">${esc(p)}</span>`).join('')}</div>
       </div>
     </div>`).join('') || '<p class="muted">No events yet.</p>';
-  EV.list = evs.map(e => e.id);                          // newest first, as shown; arrows walk this list
-  $$('#ev-list .card').forEach(c => c.onclick = () => openEvent(+c.dataset.id));
+  const list = evs.map(e => ({ id: e.id }));             // newest first, as shown; the player's arrows walk it
+  $$('#ev-list .card').forEach((c, i) => c.onclick = () => openFromList(list, i, 'events'));
 }
 $('#ev-refresh').onclick = loadEvents; $('#ev-cam').onchange = loadEvents;
 
-// Previous/next in the Events list. The list is newest-first, so "earlier" is the next index.
-const EV = { list: [], cur: null };
-function eventNav() {
-  const i = EV.list.indexOf(EV.cur);
-  return { i, earlier: i >= 0 ? EV.list[i + 1] : undefined, later: i > 0 ? EV.list[i - 1] : undefined };
+// Player arrows walk the list the video was opened from:
+//  - Events (newest first): ‹ earlier = next index, › later = previous index
+//  - Search (ranked results): ‹ previous result, › next result; each opens at its matched object
+const EV = { list: [], i: -1, mode: 'events' };
+function openFromList(list, i, mode) {
+  EV.list = list; EV.i = i; EV.mode = mode;
+  openEvent(list[i].id, list[i].seek);
+}
+function stepEvent(arrow) {                              // arrow: -1 = ‹, +1 = ›
+  const j = EV.i + (EV.mode === 'events' ? -arrow : arrow);
+  if (EV.i < 0 || j < 0 || j >= EV.list.length) return;
+  EV.i = j; openEvent(EV.list[j].id, EV.list[j].seek);
 }
 function updateEventNav() {
-  const n = eventNav();
-  $('#pl-prev').disabled = !n.earlier; $('#pl-next').disabled = !n.later;
-  $('#pl-pos').textContent = n.i >= 0 ? `${EV.list.length - n.i} / ${EV.list.length}` : '';
-  $('#pl-prev').hidden = $('#pl-next').hidden = n.i < 0;   // opened from Search: not part of the list
+  const n = EV.list.length, i = EV.i, ev = EV.mode === 'events';
+  const can = d => i >= 0 && (j => j >= 0 && j < n)(i + (ev ? -d : d));
+  $('#pl-prev').disabled = !can(-1); $('#pl-next').disabled = !can(1);
+  $('#pl-prev').title = ev ? 'Earlier event (←)' : 'Previous result (←)';
+  $('#pl-next').title = ev ? 'Later event (→)' : 'Next result (→)';
+  $('#pl-pos').textContent = i < 0 ? '' : ev ? `${n - i} / ${n}` : `Result ${i + 1} / ${n}`;
+  $('#pl-prev').hidden = $('#pl-next').hidden = i < 0;
 }
-$('#pl-prev').onclick = () => { const n = eventNav(); if (n.earlier) openEvent(n.earlier); };
-$('#pl-next').onclick = () => { const n = eventNav(); if (n.later) openEvent(n.later); };
+$('#pl-prev').onclick = () => stepEvent(-1);
+$('#pl-next').onclick = () => stepEvent(1);
 $('#player').addEventListener('keydown', e => {
   if (e.target.matches('input, textarea, select') || e.altKey || e.ctrlKey || e.metaKey) return;
   if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
@@ -372,9 +382,10 @@ $('#player').addEventListener('keydown', e => {
   }
 });
 async function openEvent(id, seek) {
-  EV.cur = id; updateEventNav();
+  const token = EV.token = {};                            // newest request wins when stepping quickly
+  updateEventNav();
   const e = await api(`/api/events/${id}`);
-  if (EV.cur !== id) return;                              // stepped on to another event meanwhile
+  if (EV.token !== token) return;
   $('#pl-title').textContent = `${camName(e.camera_id)} — ${fmtTime(e.start_ts)} — ${e.rule_name || e.source}`;
   const v = $('#pl-video');
   if (e.clip_path) {
@@ -438,7 +449,10 @@ $('#search-form').onsubmit = async ev => {
       return `<div class="card"><div class="body"><div class="title">Motion · ${esc(camName(x.camera_id))}</div>
         <div class="muted">${fmtTime(x.start_ts)} · zone ${x.zone_id || 'full'} · ${fmtDur(x.end_ts ? x.end_ts - x.start_ts : null)}</div></div></div>`;
     }).join('') || '<p class="muted">Nothing found.</p>';
-    $$('#search-results .card[data-ev]').forEach(c => c.onclick = () => c.dataset.ev && openEvent(+c.dataset.ev, c.dataset.seek ? +c.dataset.seek : undefined));
+    // Results with a recording, in ranked order, so the player's arrows step through them.
+    const playable = $$('#search-results .card[data-ev]').filter(c => c.dataset.ev);
+    const list = playable.map(c => ({ id: +c.dataset.ev, seek: c.dataset.seek ? +c.dataset.seek : undefined }));
+    playable.forEach((c, i) => c.onclick = () => openFromList(list, i, 'search'));
   } catch (e) { $('#search-meta').textContent = 'Search failed: ' + e.message; }
 };
 
