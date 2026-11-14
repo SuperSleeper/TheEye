@@ -77,10 +77,12 @@ function drawOverlay(cv, img, st, camId) {
   ctx.font = '12px system-ui';
   for (const t of st.tracks) {
     const [x1, y1, x2, y2] = t.bbox;
-    ctx.strokeStyle = '#ffcc00'; ctx.lineWidth = 2;
+    const col = t.parked ? '#9aa3ad' : '#ffcc00';          // parked = ignored by rules: grey, dashed
+    ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.setLineDash(t.parked ? [6, 4] : []);
     ctx.strokeRect(ox + x1 * dw, oy + y1 * dh, (x2 - x1) * dw, (y2 - y1) * dh);
-    const label = `${t.label} ${(t.conf * 100).toFixed(0)}%${t.plate ? ' ' + t.plate : ''}`;
-    ctx.fillStyle = '#ffcc00'; ctx.fillRect(ox + x1 * dw, oy + y1 * dh - 16, ctx.measureText(label).width + 8, 16);
+    ctx.setLineDash([]);
+    const label = `${t.label}${t.parked ? ' · parked' : ` ${(t.conf * 100).toFixed(0)}%`}${t.plate ? ' ' + t.plate : ''}`;
+    ctx.fillStyle = col; ctx.fillRect(ox + x1 * dw, oy + y1 * dh - 16, ctx.measureText(label).width + 8, 16);
     ctx.fillStyle = '#000'; ctx.fillText(label, ox + x1 * dw + 4, oy + y1 * dh - 4);
   }
 }

@@ -135,6 +135,7 @@ class DetectorConfig(BaseModel):
     model: str = "yolo11s.pt"
     device: str = "cuda:0"
     confidence: float = 0.45
+    stationary_seconds: float = 30.0   # objects that haven't moved this long are "parked": rules ignore them (0 = off)
     classes: list[str] = Field(default_factory=lambda: [
         "person", "bicycle", "car", "motorcycle", "bus", "truck", "dog", "cat", "bird"])
     plates: bool = True

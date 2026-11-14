@@ -170,6 +170,9 @@
             <select data-k="detector.device"><option value="cuda:0">GPU (cuda:0)</option><option value="cpu">CPU</option></select></label>
           <label>Min confidence <span class="val" data-show="detector.confidence"></span>
             <input type="range" min="0.1" max="0.95" step="0.05" data-k="detector.confidence" data-num></label>
+          <label>Ignore parked objects after (seconds)
+            <input type="number" min="0" max="3600" step="5" data-k="detector.stationary_seconds" data-num>
+            <span class="small muted">objects that haven't moved this long stop triggering events (e.g. parked cars); 0 = off</span></label>
         </div>
         <div class="sub-h">Objects to detect</div>
         <div class="checks" id="cfg-classes"></div>

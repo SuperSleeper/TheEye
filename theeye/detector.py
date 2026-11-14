@@ -24,6 +24,8 @@ VEHICLES = {"car", "truck", "bus", "motorcycle"}
 TRACK_TTL = 3.0          # seconds unseen before a track is finalized
 PLATE_RETRY_MAX_S = 30.0          # slowest retry for a vehicle whose plate hasn't read confidently
 IOU_MATCH = 0.3
+PARK_IOU = 0.8           # box overlap with where it last moved; above this counts as "hasn't moved"
+PARK_MEMORY_S = 600.0    # remember parked spots this long, so a briefly occluded parked car stays parked
 
 
 @dataclass
@@ -46,13 +48,16 @@ class Track:
     plate_conf: float = 0.0
     last_plate_try: float = 0.0
     plate_tries: int = 0
+    still_bbox: list[float] = field(default_factory=list)   # where it was when it last moved
+    still_since: float = 0.0
+    parked: bool = False             # hasn't moved for detector.stationary_seconds: rules ignore it
     db_id: Optional[int] = None
     hits: int = 0
 
     def public(self) -> dict:
         return {"key": self.key, "label": self.label, "bbox": [round(v, 4) for v in self.bbox],
                 "conf": round(self.conf, 3), "zones": sorted(self.zones), "plate": self.plate,
-                "first_ts": self.first_ts, "last_ts": self.last_ts, "db_id": self.db_id}
+                "first_ts": self.first_ts, "last_ts": self.last_ts, "db_id": self.db_id, "parked": self.parked}
 
 
 def _iou(a: list[float], b: list[float]) -> float:
@@ -77,6 +82,7 @@ class Detector:
         self._cv = threading.Condition()
         self._stop = threading.Event()
         self.tracks: dict[str, dict[str, Track]] = {}
+        self._parked_spots: dict[str, list[tuple[str, list[float], float]]] = {}   # cam -> (label, bbox, last seen)
         self._tlock = threading.Lock()
         self._seq = 0
         self._model = None
@@ -213,12 +219,18 @@ class Detector:
             if best is None:
                 self._seq += 1
                 best = Track(f"{cam}:{int(ts)}:{self._seq}", cam, label, nb, conf, ts, ts)
+                best.still_bbox, best.still_since = nb, ts
+                if self._was_parked_here(cam, label, nb, ts):   # reappeared in a known parked spot
+                    best.still_since = ts - self.cfg.stationary_seconds
                 cam_tracks[best.key] = best
                 is_new = True
             else:
                 unmatched.discard(best.key)
                 is_new = False
             best.bbox, best.conf, best.last_ts, best.hits = nb, conf, ts, best.hits + 1
+            if _iou(best.still_bbox, nb) < PARK_IOU:          # it moved: restart the stillness clock
+                best.still_bbox, best.still_since = nb, ts
+            best.parked = self.cfg.stationary_seconds > 0 and ts - best.still_since >= self.cfg.stationary_seconds
             best.zones |= zids
             if conf > best.best_conf * 1.05:
                 best.best_conf, best.best_bbox = conf, nb
@@ -235,6 +247,13 @@ class Detector:
             (new if is_new else upd).append(best)
             seen.append(best)
         return new, upd, seen, plate_jobs
+
+    def _was_parked_here(self, cam: str, label: str, bbox: list[float], ts: float) -> bool:
+        if self.cfg.stationary_seconds <= 0:
+            return False
+        spots = [s for s in self._parked_spots.get(cam, []) if ts - s[2] < PARK_MEMORY_S]
+        self._parked_spots[cam] = spots
+        return any(lbl == label and _iou(b, bbox) >= PARK_IOU for lbl, b, _ in spots)
 
     def _read_plate(self, cam: str, t: Track) -> None:
         frame = self.main_frame(cam)
@@ -265,6 +284,9 @@ class Detector:
                     for k, t in list(tr.items()):
                         if now - t.last_ts > TRACK_TTL:
                             ended.append(tr.pop(k))
+                for t in ended:            # remember where parked objects were, in case they reappear
+                    if t.parked:
+                        self._parked_spots.setdefault(t.camera_id, []).append((t.label, t.bbox, t.last_ts))
             for t in ended:            # outside the lock: snapshot/embedding work is slow
                 try:
                     self.on_track_end(t)
