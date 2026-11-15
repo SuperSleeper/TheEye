@@ -9,6 +9,7 @@ import logging
 import math
 import threading
 import time
+from collections import deque
 from typing import Callable, Optional
 
 import av
@@ -64,6 +65,8 @@ class Camera:
         self.main_size: tuple[int, int] = (0, 0)
         self.latest_frame: Optional[np.ndarray] = None     # analysis-res BGR
         self.latest_frame_ts: float = 0.0
+        self.latest_frame_lag: float = 0.0      # how far behind real time that frame was when it arrived (s)
+        self.lag = {"main": _Lag(), "sub": _Lag()}
         self.latest_jpeg: Optional[bytes] = None
         self.sound_db: Optional[float] = None    # loudness of the last ~100 ms, dBFS (0 = full scale)
         self.sound_ts: float = 0.0
@@ -110,6 +113,7 @@ class Camera:
                 vs = c.streams.video[0]
                 aus = c.streams.audio[0] if c.streams.audio else None   # read even if not recorded (sound meter)
                 self.ring.reset()
+                self.lag["main"].reset()
                 self.template_stream = vs
                 self.audio_template = aus if self.cfg.record_audio else None
                 self.has_audio = aus is not None
@@ -135,10 +139,11 @@ class Camera:
                         continue
                     self.ring.push(Pkt(bytes(pkt), pkt.pts, pkt.dts, pkt.duration or 0,
                                        pkt.time_base, bool(pkt.is_keyframe), now))
+                    lag = self.lag["main"].push(pkt.pts, pkt.time_base, now)
                     if analyse_here:
                         for fr in pkt.decode():
                             if sampler.take(now):
-                                self._emit(fr, now)
+                                self._emit(fr, now, lag)
                 backoff = 1.0                # stream ended normally: reconnect promptly
             except Exception as e:  # noqa: BLE001 - camera errors are expected; keep retrying
                 backoff = _next_backoff(e, backoff)
@@ -162,6 +167,7 @@ class Camera:
                 c = _open(self.cfg.sub_url)
                 vs = c.streams.video[0]
                 vs.thread_type = "AUTO"
+                self.lag["sub"].reset()
                 self.status.update(sub="live", sub_err=None,
                                    sub_res=f"{vs.codec_context.width}x{vs.codec_context.height}")
                 backoff = 1.0
@@ -170,8 +176,9 @@ class Camera:
                     if self._stop.is_set():
                         break
                     now = time.time()
+                    lag = self.lag["sub"].push(fr.pts, fr.time_base, now)
                     if sampler.take(now):
-                        self._emit(fr, now)
+                        self._emit(fr, now, lag)
                 backoff = 1.0
             except Exception as e:  # noqa: BLE001
                 backoff = _next_backoff(e, backoff)
@@ -215,7 +222,13 @@ class Camera:
                     except Exception:  # noqa: BLE001
                         log.exception("[%s] audio callback failed", self.id)
 
-    def _emit(self, fr: av.VideoFrame, now: float) -> None:
+    def lag_now(self) -> dict:
+        """Seconds each live stream is running behind real time, beyond its best in the last minute."""
+        now = time.time()
+        return {k: (round(v, 2) if (v := t.current(now)) is not None and self.status.get(k) == "live" else None)
+                for k, t in self.lag.items()}
+
+    def _emit(self, fr: av.VideoFrame, now: float, lag: float = 0.0) -> None:
         if self._stop.is_set():          # camera removed/replaced: old thread may linger until next packet
             return
         w = fr.width
@@ -228,6 +241,7 @@ class Camera:
         with self.frame_cond:
             self.latest_frame = img
             self.latest_frame_ts = now
+            self.latest_frame_lag = lag
             if ok:
                 self.latest_jpeg = jpg.tobytes()
             self.frame_cond.notify_all()
@@ -282,6 +296,62 @@ class Camera:
         with self.frame_cond:
             self.frame_cond.wait_for(lambda: self.latest_frame_ts > last_ts, timeout=timeout)
             return self.latest_jpeg, self.latest_frame_ts
+
+
+class _Lag:
+    """How far a stream is running behind real time, from packet arrival time minus its media time (pts).
+
+    Cameras don't send a wall clock (no RTCP sender reports), so the fixed part of the delay (encoding plus
+    network) can't be known. This measures the delay *beyond the stream's best in the last minute*: buffering,
+    bursts, stalls. The baseline is a sliding minimum, so slow clock drift between camera and server cancels out.
+    """
+    WINDOW_S, BUCKET_S, PEAK_S, JUMP_S = 60.0, 5.0, 3.0, 30.0
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.reset()
+
+    def reset(self) -> None:
+        with getattr(self, "_lock", threading.Lock()):
+            self._mins: deque = deque()     # (bucket start, lowest arrival-minus-media offset in it)
+            self._peaks: deque = deque()    # (arrival, lag) for the last few seconds
+            self._base: Optional[float] = None
+            self._media: Optional[float] = None
+            self._off = 0.0
+
+    def push(self, pts, time_base, now: float) -> float:
+        """Record a packet/frame; returns its lag in seconds."""
+        if pts is None or time_base is None:
+            return 0.0
+        media = float(pts * time_base)
+        off = now - media
+        if self._media is not None and abs(off - self._off) > self.JUMP_S:
+            self.reset()                    # the camera restarted its timestamps
+        with self._lock:
+            b = now - now % self.BUCKET_S
+            if self._mins and self._mins[-1][0] == b:
+                if off < self._mins[-1][1]:
+                    self._mins[-1] = (b, off)
+            else:
+                self._mins.append((b, off))
+            while self._mins[0][0] < now - self.WINDOW_S:
+                self._mins.popleft()
+            self._base = min(m for _, m in self._mins)
+            self._media, self._off = media, off
+            lag = off - self._base
+            self._peaks.append((now, lag))
+            while self._peaks[0][0] < now - self.PEAK_S:
+                self._peaks.popleft()
+            return lag
+
+    def current(self, now: float) -> Optional[float]:
+        """Worst lag over the last few seconds; keeps growing while nothing arrives (a stall)."""
+        with self._lock:
+            if self._media is None or self._base is None:
+                return None
+            stall = now - self._media - self._base
+            peak = max((lag for t, lag in self._peaks if t >= now - self.PEAK_S), default=0.0)
+            return max(0.0, stall, peak)
 
 
 class _Sampler:

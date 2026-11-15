@@ -116,7 +116,7 @@ function initLive() {
           <span class="badge st"></span><span class="badge recb hidden rec">REC</span>
           <button class="recnow" title="Record the next 30 seconds">● Record 30s</button>
           <button class="cfg" title="Edit this camera in Setup">⚙</button></div>
-        <div class="bar-sub"><span class="ring"></span>
+        <div class="bar-sub"><span class="ring"></span><span class="lat hidden"></span>
           <span class="snd hidden" title="Sound level right now (dBFS)"><i><b></b></i><span></span></span></div></div>
     </div>`).join('') : '<p class="muted">No cameras configured — add them on the Setup tab.</p>';
   $$('.tile', grid).forEach(tile => {
@@ -142,6 +142,7 @@ function initLive() {
       msg.classList.toggle('hidden', live && tile.dataset.frames === '1');
       if (!live) msg.textContent = friendlyCamError(c.status.main_err, c.status.main);
       $('.ring', tile).textContent = `loop ${Math.floor(c.ring.seconds)}s · ${(c.ring.bytes / 1e6).toFixed(0)} MB`;
+      showLatency(tile, c, live);
       const snd = $('.snd', tile);
       snd.classList.toggle('hidden', c.sound_db == null);
       if (c.sound_db != null) {
@@ -157,17 +158,50 @@ function initLive() {
   timers.live = setInterval(tick, 500); tick();
 }
 
+// How far behind real time the tile's picture is. Per frame: the server's X-Frame-Age (stream lag when the
+// frame arrived + time since) plus this browser's fetch time. Shows the worst of the last 2 s so it doesn't flicker.
+const LAT_WINDOW_MS = 2000;
+function showLatency(tile, c, live) {
+  const el = $('.lat', tile), now = performance.now();
+  const samples = (tile._lat || []).filter(x => now - x.t < LAT_WINDOW_MS);
+  tile._lat = samples;
+  const stream = c.lag?.[c.feed];
+  let total = samples.length ? Math.max(...samples.map(x => x.age + x.net)) : stream;   // no recent frames: server's view
+  el.classList.toggle('hidden', !live || total == null);
+  if (!live || total == null) return;
+  const net = samples.length ? Math.max(...samples.map(x => x.net)) : null;
+  const fmt = v => v < 1 ? `${Math.round(v * 1000)} ms` : `${v.toFixed(1)} s`;
+  el.textContent = `⏱ ${fmt(total)}`;
+  el.className = 'lat' + (total >= 3 ? ' bad' : total >= 1 ? ' warn' : '');
+  el.title = `Live picture is about ${fmt(total)} behind real time.\n`
+    + (stream != null ? `• Camera → server: +${fmt(stream)} over its best in the last minute\n` : '')
+    + (net != null ? `• Server → this browser: ${fmt(net)}\n` : '')
+    + (c.feed === 'sub' && c.lag?.main != null ? `• Recording (main) stream: +${fmt(c.lag.main)}\n` : '')
+    + `The camera's own encoding/network delay isn't included: these cameras don't send a clock to measure it against.`;
+}
+
 // Live view polls single JPEGs instead of MJPEG: an endless MJPEG response holds one of the browser's
 // 6 connections per host, so with 6+ cameras every other request on the page would queue forever.
+// Fetched (not <img src>) so the frame's age header and the download time can be read for the latency stat.
 function pumpFrames(tile) {
   const img = $('img', tile), url = `/api/cameras/${encodeURIComponent(tile.dataset.cam)}/snapshot.jpg`;
-  const next = delay => setTimeout(() => {
+  let shown = null;
+  const next = delay => setTimeout(async () => {
     if (!tile.isConnected) return;
     if (document.hidden || F.cam) return next(1000);      // paused while a camera is full-window
-    img.src = `${url}?t=${Date.now()}`;
+    const t0 = performance.now();
+    try {
+      const r = await fetch(`${url}?t=${Date.now()}`, { cache: 'no-store' });
+      if (!r.ok) throw new Error(r.status);
+      const blob = await r.blob(), t1 = performance.now();
+      const age = parseFloat(r.headers.get('X-Frame-Age'));
+      if (Number.isFinite(age)) (tile._lat ||= []).push({ t: t1, age, net: (t1 - t0) / 1000 });
+      const src = URL.createObjectURL(blob);
+      img.onload = () => { if (shown) URL.revokeObjectURL(shown); shown = src; tile.dataset.frames = '1'; next(150); };
+      img.onerror = () => { URL.revokeObjectURL(src); tile.dataset.frames = '0'; next(2000); };
+      img.src = src;
+    } catch { tile.dataset.frames = '0'; next(2000); }
   }, delay);
-  img.onload = () => { tile.dataset.frames = '1'; next(150); };
-  img.onerror = () => { tile.dataset.frames = '0'; next(2000); };
   next(0);
 }
 // Drag tiles by their grip to reorder. Pointer events (not HTML5 DnD) so it also works on touch screens.

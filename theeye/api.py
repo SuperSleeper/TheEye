@@ -123,6 +123,7 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         order = {c.id: i for i, c in enumerate(hub.cfg.cameras)}   # config order = display order
         cams = sorted(hub.cams.values(), key=lambda c: order.get(c.id, len(order)))
         return [{"id": c.id, "name": c.cfg.name or c.id, "status": c.status, "ring": c.ring.stats,
+                 "lag": c.lag_now(), "feed": "sub" if c.cfg.sub_url else "main",
                  "ring_seconds": c.cfg.ring_seconds, "has_audio": c.has_audio,
                  "sound_db": c.sound_db if time.time() - c.sound_ts < 2 else None,
                  "sound_threshold_db": c.cfg.sound_threshold_db if c.cfg.sound_detect else None} for c in cams]
@@ -148,7 +149,10 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         c = cam_or_404(cam_id)
         if not c.latest_jpeg:
             raise HTTPException(503, "no frame yet")
-        return Response(c.latest_jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+        # How old this picture is right now: lag when it arrived + time since (the browser adds its fetch time).
+        age = time.time() - c.latest_frame_ts + c.latest_frame_lag
+        return Response(c.latest_jpeg, media_type="image/jpeg",
+                        headers={"Cache-Control": "no-store", "X-Frame-Age": f"{age:.3f}"})
 
     @app.get("/api/cameras/{cam_id}/live.mp4")
     async def live_mp4(cam_id: str, request: Request, audio: bool = True):
