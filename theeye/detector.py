@@ -32,6 +32,7 @@ IOU_MATCH = 0.3
 TRAVEL_IOU = 0.5         # box overlap with where the track began; below this it has actually driven somewhere
 PARK_IOU = 0.8           # box overlap with where it last moved; above this counts as "hasn't moved"
 STILL_SPOT_IOU = 0.5
+STILL_SPOT_MIN_S = 20.0    # a vehicle must sit this long to mark a still spot
 PARK_MEMORY_S = 600.0    # remember parked spots this long, so a briefly occluded parked car stays parked
 
 
@@ -387,7 +388,10 @@ class Detector:
                 for t in ended:            # remember where parked objects were, in case they reappear
                     if t.parked:
                         self._parked_spots.setdefault(t.camera_id, []).append((t.label, t.bbox, t.last_ts))
-                    if t.label in VEHICLES and not t.travelled and t.hits >= 3:   # sat there, didn't drive
+                    # A vehicle that sat there (or a re-track of one that did) marks the spot. Not short tracks:
+                    # passing cars split into fragments would mark the whole lane and stop every car after.
+                    if t.label in VEHICLES and not t.travelled and (
+                            t.last_ts - t.first_ts >= STILL_SPOT_MIN_S or t.at_still_spot):
                         self._still_spots.setdefault(t.camera_id, []).append((t.label, t.bbox, t.last_ts))
             for t in ended:            # outside the lock: snapshot/embedding work is slow
                 try:
