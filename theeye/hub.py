@@ -411,6 +411,11 @@ class Hub:
                 ev = self._open_event(cam, None if builtin else rule.id, "sound" if builtin else "rule", now, rule.preroll, rule.postroll,
                                       rule.max_length, rule.record, rule.name)
                 self._open_events[key] = ev
+                why = [f"{t['label']} {t['conf']:.2f} hits={t.get('hits')} age={now - t['first_ts']:.0f}s"
+                       f"{' drove' if t.get('travelled') else ''}{' still-spot' if t.get('still_spot') else ''}"
+                       f" box={[round(v, 2) for v in t['bbox']]}"
+                       for t in st.tracks if t.get("confirmed", True) and not t.get("parked")]
+                log.info("[%s] event %d triggered by: %s", cam, ev.id, "; ".join(why) or "no object (motion/sound)")
                 if rule.webhook:
                     self._webhook(rule.webhook, ev, rule.name)
             ev.last_active = now
