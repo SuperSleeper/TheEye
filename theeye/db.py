@@ -151,6 +151,9 @@ class DB:
         "detections": {
             "vehicle_id": "INTEGER",                      # repeat-vehicle tracking
             "moving": "INTEGER",                          # box travelled during the track (NULL = not recorded)
+            "kind": "TEXT",                               # animal it really is, when not the label (squirrel for "bird")
+            "subtype": "TEXT",                            # breed / species (crow, pomeranian)
+            "subtype_conf": "REAL",                       # certainty of kind/subtype; 0 = looked, kept the label
         },
     }
 

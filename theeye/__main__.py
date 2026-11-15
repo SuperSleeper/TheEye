@@ -31,7 +31,8 @@ def main() -> None:
 
     cfg = load_config(args.config)
     hub = Hub(cfg)
-    searcher = Searcher(cfg.llm, hub.db, {c.id: c.cfg.name or c.id for c in hub.cams.values()}, hub.embedder)
+    searcher = Searcher(cfg.llm, hub.db, {c.id: c.cfg.name or c.id for c in hub.cams.values()}, hub.embedder,
+                        hub.animals)
     cfg_path = Path(args.config).resolve()
     if not cfg_path.exists():
         logging.warning("%s not found — starting empty; open the Setup tab to configure", cfg_path)

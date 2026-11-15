@@ -32,6 +32,7 @@ from .motion import MotionEngine, Zone
 from .recorder import RecordingManager
 from .vehicles import VehicleRegistry
 from .rules import CamState, Rule, evaluate, is_loud
+from .subtypes import ANIMAL_LABELS, SubtypeClassifier
 
 log = logging.getLogger("theeye.hub")
 
@@ -65,6 +66,7 @@ class Hub:
         self.motion = MotionEngine(self._motion_start, self._motion_end)
         self.embedder = (Embedder(cfg.detector.clip_model, cfg.detector.clip_pretrained, cfg.detector.device)
                          if cfg.detector.embeddings else None)
+        self.animals = SubtypeClassifier(cfg.animals, self.embedder) if self.embedder else None
         self.detector: Optional[Detector] = None
         if cfg.detector.enabled:
             self.detector = Detector(cfg.detector, self.data / "snaps", self.motion.zones_for,
@@ -101,6 +103,7 @@ class Hub:
             threading.Thread(target=lambda: log.info("vehicles: seeded from %d past sightings", self.vehicles.backfill()),
                              name="vehicle-backfill", daemon=True).start()
         threading.Thread(target=self._retention, name="retention", daemon=True).start()
+        threading.Thread(target=self._animal_backfill, name="animal-backfill", daemon=True).start()
 
     def stop(self) -> None:
         self._stop.set()
@@ -154,6 +157,8 @@ class Hub:
         # keep data path unchanged until restart; everything else takes effect now
         new.storage.path = old.storage.path
         self.vehicles.cfg = new.vehicles
+        if self.animals:
+            self.animals.cfg = new.animals
         self.cfg = new
         return restart
 
@@ -255,8 +260,11 @@ class Hub:
             self.db.execute("DELETE FROM detections WHERE id=?", (t.db_id,))
             self.db.execute("DELETE FROM event_links WHERE kind='detection' AND ref_id=?", (t.db_id,))
             return
-        snap = self.detector.save_snapshot(t) if self.detector else None
         emb = self.detector.embed(t) if self.detector else None
+        animal = self._classify_animal(t.label, emb)
+        if animal:
+            t.kind, t.subtype = animal[0], animal[1]
+        snap = self.detector.save_snapshot(t) if self.detector else None    # after: the picture shows the better name
         self.db.execute(
             "UPDATE detections SET confidence=?, last_ts=?, bbox=?, zones=?, plate=?, plate_conf=?,"
             " snapshot_path=COALESCE(?, snapshot_path), embedding=COALESCE(?, embedding), moving=? WHERE id=?",
@@ -273,8 +281,66 @@ class Hub:
                 for ev in self._events_for(t.camera_id):
                     ev.plates.add(t.plate)
                     self._flush_event_meta(ev)
+        if t.label in ANIMAL_LABELS and emb is not None:
+            self._store_animal(t.db_id, t.label, animal)
         for row in self.db.all("SELECT event_id FROM event_links WHERE kind='detection' AND ref_id=?", (t.db_id,)):
             self._event_thumb_from_track(row["event_id"], t)
+
+    # -------------------------------------------------------------- animals
+    def _classify_animal(self, label: str, emb: Optional[bytes]):
+        if not self.animals or emb is None or label not in ANIMAL_LABELS:
+            return None
+        try:
+            return self.animals.classify(label, np.frombuffer(emb, dtype=np.float32))
+        except Exception:  # noqa: BLE001
+            log.exception("animal classification failed")
+            return None
+
+    def _store_animal(self, det_id: int, label: str, animal) -> None:
+        """Save the closer look at an animal (subtype_conf 0 = looked, nothing surer than the label), and add
+        the better name to the recordings it's in. A corrected kind (squirrel for "bird") also takes the wrong
+        label off a recording, unless something else in it really is that."""
+        kind, sub, conf = animal if animal else (None, None, 0.0)
+        self.db.execute("UPDATE detections SET kind=?, subtype=?, subtype_conf=? WHERE id=?",
+                        (kind if kind != label else None, sub, round(conf, 3), det_id))
+        if not animal:
+            return
+        add = {n for n in (kind if kind != label else None, sub) if n}
+        for row in self.db.all("SELECT event_id FROM event_links WHERE kind='detection' AND ref_id=?", (det_id,)):
+            eid = row["event_id"]
+            drop = kind != label and not self.db.one(
+                "SELECT 1 FROM event_links l JOIN detections d ON d.id = l.ref_id AND l.kind = 'detection'"
+                " WHERE l.event_id = ? AND d.id != ? AND d.label = ? AND d.kind IS NULL LIMIT 1", (eid, det_id, label))
+            with self._lock:
+                ev = next((e for e in self._open_events.values() if e.id == eid), None)
+                if ev is not None:
+                    ev.labels |= add
+                    if drop:
+                        ev.labels.discard(label)
+                    self._flush_event_meta(ev)
+                    continue
+            r = self.db.one("SELECT labels FROM events WHERE id=?", (eid,))
+            if r:
+                labels = (set(jload(r["labels"], [])) | add) - ({label} if drop else set())
+                self.db.execute("UPDATE events SET labels=? WHERE id=?", (json.dumps(sorted(labels)), eid))
+
+    def _animal_backfill(self) -> None:
+        """One pass over animal detections recorded before this existed (or while it was off)."""
+        if not self.animals or not self.cfg.animals.enabled:
+            return
+        n = changed = 0
+        while not self._stop.is_set():
+            rows = self.db.all(
+                "SELECT id, label, embedding FROM detections WHERE subtype_conf IS NULL AND embedding IS NOT NULL"
+                f" AND label IN ({','.join('?' * len(ANIMAL_LABELS))}) LIMIT 200", sorted(ANIMAL_LABELS))
+            if not rows:
+                break
+            for r in rows:
+                a = self._classify_animal(r["label"], r["embedding"])
+                self._store_animal(r["id"], r["label"], a)
+                n, changed = n + 1, changed + bool(a)
+        if n:
+            log.info("animals: looked closer at %d past animal detections, %d named more precisely", n, changed)
 
     # ---------------------------------------------------------------- rules
     def cam_state(self, cam: str) -> CamState:

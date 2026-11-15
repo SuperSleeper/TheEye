@@ -43,6 +43,16 @@ class Embedder:
             self.dim = v.shape[0]
             return v
 
+    def texts(self, items: list[str]) -> np.ndarray:
+        """Normalized embeddings for several exact texts (no prompt added), one row each."""
+        import torch
+        with self._lock:
+            self._load()
+            t = self._tok(items).to(self.device)
+            with torch.no_grad():
+                v = self._model.encode_text(t).float()
+            return torch.nn.functional.normalize(v, dim=-1).cpu().numpy().astype(np.float32)
+
     def text(self, s: str) -> np.ndarray:
         import torch
         with self._lock:

@@ -66,6 +66,8 @@ class Track:
     visible: bool = False            # currently shown/considered at all (see Detector._handle)
     db_id: Optional[int] = None
     hits: int = 0
+    kind: Optional[str] = None            # closer look at an animal (theeye.subtypes), set at track end
+    subtype: Optional[str] = None
 
     def public(self) -> dict:
         return {"key": self.key, "label": self.label, "bbox": [round(v, 4) for v in self.bbox],
@@ -383,7 +385,7 @@ class Detector:
         h, w = img.shape[:2]
         x1, y1, x2, y2 = t.best_bbox
         cv2.rectangle(img, (int(x1 * w), int(y1 * h)), (int(x2 * w), int(y2 * h)), (0, 200, 255), 2)
-        txt = t.label + (f" {t.plate}" if t.plate else "")
+        txt = (t.subtype or t.kind or t.label) + (f" {t.plate}" if t.plate else "")
         cv2.putText(img, txt, (int(x1 * w), max(14, int(y1 * h) - 4)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1, cv2.LINE_AA)
         day = time.strftime("%Y-%m-%d", time.localtime(t.first_ts))

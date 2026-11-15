@@ -19,6 +19,7 @@ import numpy as np
 from . import timeparse
 from .config import LLMConfig
 from .db import DB, jload
+from .subtypes import ANIMAL_LABELS
 
 log = logging.getLogger("theeye.search")
 
@@ -139,11 +140,12 @@ def _parse_when(v: str) -> Optional[float]:
 
 
 class Searcher:
-    def __init__(self, cfg: LLMConfig, db: DB, cameras: dict[str, str], embedder=None):
+    def __init__(self, cfg: LLMConfig, db: DB, cameras: dict[str, str], embedder=None, animals=None):
         self.cfg = cfg
         self.db = db
         self.cameras = cameras           # id -> name
         self.embedder = embedder
+        self.animals = animals           # SubtypeClassifier: the animal / breed / species names it can give
 
     # --------------------------------------------------------------- LLM
     def interpret(self, q: str) -> dict[str, Any]:
@@ -191,6 +193,26 @@ class Searcher:
             f["start"], f["end"], f["hours"] = "", "", []
         return _apply_certainty(q, f)
 
+    def _apply_animals(self, q: str, f: dict) -> None:
+        """Animal, breed and species names in the question ("squirrel", "crow", "pomeranian") become a filter
+        on what the closer look at each animal found. A plain "bird" / "dog" / "cat" stays a label filter."""
+        if not self.animals:
+            return
+        low = " " + re.sub(r"[^a-z0-9 ]+", " ", q.lower()) + " "
+        found = []
+        for n in sorted(self.animals.names(), key=len, reverse=True):     # "german shepherd" before "shepherd"
+            if re.search(rf"\b{re.escape(n)}(e?s)?\b", low):
+                found.append(n)
+                low = re.sub(rf"\b{re.escape(n)}(e?s)?\b", " ", low)
+        if not found:
+            return
+        f["animals"] = found
+        f["labels"] = [l for l in (f.get("labels") or []) if l not in ANIMAL_LABELS]
+        vis = (f.get("visual") or "").lower()
+        for n in found:
+            vis = re.sub(rf"\b{re.escape(n)}(e?s)?\b", " ", vis)
+        f["visual"] = " ".join(vis.split()) if any(w not in STOP for w in vis.split()) else ""
+
     def _named_cameras(self, text: str) -> tuple[list[str], str]:
         """Cameras whose name appears in the text (e.g. "driveway" -> Driveway), and the text without it."""
         found, low = [], " " + text.lower() + " "
@@ -228,6 +250,7 @@ class Searcher:
         """cameras: the cameras ticked in the UI (None = all). A camera named in the question narrows it further."""
         t0 = time.time()
         f = self.interpret(q)
+        self._apply_animals(q, f)
         target = f.get("target") or "detections"
         if cameras is not None:
             picked = [c for c in cameras if c in self.cameras]
@@ -274,8 +297,13 @@ class Searcher:
         self._time_clauses(f, "first_ts", where, args)
         labels = [l for l in (f.get("labels") or []) if l]
         if labels:
-            where.append(f"label IN ({','.join('?' * len(labels))})")
+            where.append(f"COALESCE(kind, label) IN ({','.join('?' * len(labels))})")
             args += labels
+        names = f.get("animals") or []
+        if names:
+            q = ",".join("?" * len(names))
+            where.append(f"(kind IN ({q}) OR subtype IN ({q}))")
+            args += names + names
         plate = (f.get("plate") or "").upper().replace(" ", "")
         if plate:
             where.append("plate GLOB ?")
@@ -325,6 +353,7 @@ class Searcher:
             r.pop("embedding", None)
             r["bbox"] = jload(r["bbox"], [])
             r["zones"] = jload(r["zones"], [])
+            r["animal"] = r.pop("kind", None)       # the column; "kind" below is the result type
             r["kind"] = "detection"
             r["tags"] = self._event_tags(r["event_id"]) if r["event_id"] else [{"label": r["label"], "conf": r["confidence"]}]
             out.append(r)
@@ -332,7 +361,8 @@ class Searcher:
 
     def _event_tags(self, eid: int) -> list[dict]:
         return [{"label": t["label"], "conf": t["conf"]} for t in self.db.all(
-            "SELECT d.label, MAX(d.confidence) AS conf FROM event_links l JOIN detections d"
+            "SELECT COALESCE(d.subtype, d.kind, d.label) AS label, MAX(d.confidence) AS conf"
+            " FROM event_links l JOIN detections d"
             " ON d.id = l.ref_id AND l.kind = 'detection' WHERE l.event_id = ? GROUP BY d.label ORDER BY conf DESC",
             (eid,))]
 
@@ -343,6 +373,10 @@ class Searcher:
         for l in f.get("labels") or []:
             where.append("labels LIKE ?")
             args.append(f'%"{l}"%')
+        names = f.get("animals") or []
+        if names:
+            where.append("(" + " OR ".join("labels LIKE ?" for _ in names) + ")")
+            args += [f'%"{n}"%' for n in names]
         plate = (f.get("plate") or "").upper().replace("*", "%")
         if plate:
             where.append("plates LIKE ?")

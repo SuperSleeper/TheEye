@@ -632,7 +632,7 @@ async function openEvent(id, seek) {
       : '<p class="muted">No clip (recording disabled, pruned, or still pending).</p>'}
     <div><b>Detections</b> (click to jump)<br>${e.detections.map(d => `
       <span class="det" data-seek="${d.seek}">${d.snapshot_path ? `<img src="/media/${esc(d.snapshot_path)}">` : ''}
-      ${esc(d.label)} ${(d.confidence * 100).toFixed(0)}%${d.plate ? ` <span class="chip plate">${esc(d.plate)}</span>` : ''}</span>`).join('') || '<span class="muted">none</span>'}</div>
+      ${esc(animalName(d))} ${(d.confidence * 100).toFixed(0)}%${d.plate ? ` <span class="chip plate">${esc(d.plate)}</span>` : ''}</span>`).join('') || '<span class="muted">none</span>'}</div>
     <div style="margin-top:6px"><b>Motion triggers</b>: ${e.motion.length} ${e.motion.map(m => `<span class="chip">zone ${m.zone_id || 'full'} · ${fmtDur(m.end_ts ? m.end_ts - m.start_ts : null)}</span>`).join(' ')}</div>
     <div style="margin-top:8px"><button id="pl-del" class="danger">Delete event</button></div>`;
   $$('#pl-info .det').forEach(d => d.onclick = () => { v.currentTime = +d.dataset.seek; v.play(); });
@@ -697,6 +697,9 @@ api('/api/vehicles?status=flagged&limit=1').then(r => updateVehicleBadge(r.count
 
 // ---------------------------------------------------------------- search
 // Every kind of object found in a recording, with its best certainty; the one that matched is highlighted.
+// Detector label, or the closer look at an animal: "squirrel (was bird)", "crow", "pomeranian".
+const animalName = d => d.subtype || d.animal
+  ? `${d.subtype || d.animal}${d.animal ? ` (detector said ${d.label})` : ''}` : d.label;
 const tagChips = (tags, hit) => (tags || []).map(t =>
   `<span class="chip${t.label === hit ? ' hit' : ''}">${esc(t.label)} ${Math.round(t.conf * 100)}%</span>`).join('');
 // Camera filter for searches. Stores the cameras NOT ticked, so a newly added camera is searched by default.
@@ -738,6 +741,7 @@ $('#search-form').onsubmit = async ev => {
     if (f.time_label) parts.push(`🕑 ${f.time_label}`);
     if (f.cameras?.length) parts.push(`cameras=${f.cameras.map(camName).join(', ')}`);
     if (f.labels?.length) parts.push(`labels=${f.labels.join(',')}`);
+    if (f.animals?.length) parts.push(`animals=${f.animals.join(',')}`);
     if (f.plate) parts.push(`plate=${f.plate}`);
     if (f.zones?.length) parts.push(`zones=${f.zones.join(',')}`);
     if (!f.time_label) {
@@ -751,9 +755,9 @@ $('#search-form').onsubmit = async ev => {
       if (x.kind === 'detection') return `
         <div class="card" data-ev="${x.event_id || ''}" data-seek="${x.seek ?? ''}">
           ${x.snapshot_path ? `<img loading="lazy" src="/media/${esc(x.snapshot_path)}">` : '<img>'}
-          <div class="body"><div class="title"><span>${esc(x.label)} ${(x.confidence * 100).toFixed(0)}%</span><span class="muted">${x.score != null ? 'look-alike ' + x.score.toFixed(2) : ''}</span></div>
+          <div class="body"><div class="title"><span>${esc(animalName(x))} ${(x.confidence * 100).toFixed(0)}%</span><span class="muted">${x.score != null ? 'look-alike ' + x.score.toFixed(2) : ''}</span></div>
           <div class="muted">${esc(camName(x.camera_id))} · ${fmtTime(x.first_ts)}${x.event_id ? '' : ' · no clip'}</div>
-          <div class="chips">${tagChips(x.tags, x.label)}${x.plate ? `<span class="chip plate">${esc(x.plate)}</span>` : ''}</div></div></div>`;
+          <div class="chips">${tagChips(x.tags, x.subtype || x.animal || x.label)}${x.plate ? `<span class="chip plate">${esc(x.plate)}</span>` : ''}</div></div></div>`;
       if (x.kind === 'event') return `
         <div class="card" data-ev="${x.id}">${x.snapshot_path ? `<img loading="lazy" src="/media/${esc(x.snapshot_path)}">` : '<img>'}
           <div class="body"><div class="title"><span>Event #${x.id}</span></div><div class="muted">${esc(camName(x.camera_id))} · ${fmtTime(x.start_ts)}</div>
@@ -1126,9 +1130,11 @@ function renderSetup() {
   // simple fields bound by data-k
   $$('#tab-setup [data-k]').forEach(el => {
     const v = getK(S.cfg, el.dataset.k);
-    if (el.type === 'checkbox') el.checked = !!v; else el.value = v ?? '';
+    const csv = el.hasAttribute('data-csv');               // a list edited as "a, b, c"
+    if (el.type === 'checkbox') el.checked = !!v; else el.value = csv ? (v || []).join(', ') : v ?? '';
     el.oninput = el.onchange = () => {
-      setK(S.cfg, el.dataset.k, el.type === 'checkbox' ? el.checked : el.hasAttribute('data-num') ? +el.value : el.value);
+      setK(S.cfg, el.dataset.k, el.type === 'checkbox' ? el.checked : el.hasAttribute('data-num') ? +el.value
+        : csv ? el.value.split(',').map(s => s.trim()).filter(Boolean) : el.value);
       showVals(); markDirty();
     };
   });

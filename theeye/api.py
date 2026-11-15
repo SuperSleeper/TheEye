@@ -427,7 +427,8 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         e = _event_out(e)
         e["motion"] = db.all("SELECT m.* FROM motion_triggers m JOIN event_links l ON l.ref_id=m.id "
                              "AND l.kind='motion' WHERE l.event_id=? ORDER BY m.start_ts", (eid,))
-        dets = db.all("SELECT d.id,d.label,d.confidence,d.first_ts,d.last_ts,d.plate,d.snapshot_path,d.zones "
+        dets = db.all("SELECT d.id,d.label,d.kind AS animal,d.subtype,d.subtype_conf,d.confidence,d.first_ts,"
+                      "d.last_ts,d.plate,d.snapshot_path,d.zones "
                       "FROM detections d JOIN event_links l ON l.ref_id=d.id AND l.kind='detection' "
                       "WHERE l.event_id=? ORDER BY d.first_ts", (eid,))
         for d in dets:

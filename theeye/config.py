@@ -182,6 +182,28 @@ class ServerConfig(BaseModel):
     key_file: Optional[str] = None
 
 
+class AnimalsConfig(BaseModel):
+    """Name the animal more precisely than the detector can (it only knows bird/cat/dog), using the CLIP
+    picture fingerprint every track already gets. Applies live; needs detector.embeddings on."""
+    enabled: bool = True
+    min_confidence: float = Field(0.5, ge=0.2, le=0.95)   # below this the detector's own label is kept
+    # Step 1: which animal it really is. A squirrel the detector called "bird" is caught here.
+    kinds: list[str] = Field(default_factory=lambda: [
+        "bird", "squirrel", "cat", "dog", "raccoon", "opossum", "rabbit", "fox", "coyote", "deer", "skunk"])
+    # Step 2: which kind of bird / dog / cat.
+    birds: list[str] = Field(default_factory=lambda: [
+        "crow", "raven", "hawk", "owl", "pigeon", "mourning dove", "seagull", "sparrow", "finch", "robin",
+        "blue jay", "cardinal", "mockingbird", "hummingbird", "woodpecker", "duck", "goose", "chicken", "parrot"])
+    dogs: list[str] = Field(default_factory=lambda: [
+        "pomeranian", "chihuahua", "labrador retriever", "golden retriever", "german shepherd", "pit bull",
+        "husky", "poodle", "beagle", "dachshund", "corgi", "shih tzu", "yorkshire terrier", "border collie",
+        "boxer", "bulldog", "french bulldog", "great dane", "rottweiler", "australian shepherd", "maltese", "pug",
+        "samoyed", "american eskimo dog", "japanese spitz"])
+    cats: list[str] = Field(default_factory=lambda: [
+        "tabby cat", "siamese cat", "persian cat", "maine coon cat", "bengal cat"])   # colour-only names
+                                                                    # ("white cat") beat breeds on white dogs
+
+
 class Config(BaseModel):
     credentials: list[Credential] = Field(default_factory=list)
     cameras: list[CameraConfig] = Field(default_factory=list)
@@ -190,6 +212,7 @@ class Config(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     vehicles: VehiclesConfig = Field(default_factory=VehiclesConfig)
+    animals: AnimalsConfig = Field(default_factory=AnimalsConfig)
 
     @model_validator(mode="before")
     @classmethod
