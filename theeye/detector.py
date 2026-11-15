@@ -114,16 +114,31 @@ class Detector:
         self.on_track_end: Callable[[Track], None] = lambda t: None
         self.on_frame_tracks: Callable[[str, float, list[Track]], None] = lambda c, ts, t: None
         self.stats = {"infer_ms": 0.0, "batches": 0}
+        self._thread: Optional[threading.Thread] = None
+        self._busy_since: Optional[float] = None      # monotonic time the current batch started, None when idle
 
     # ------------------------------------------------------------- lifecycle
     def start(self) -> None:
-        threading.Thread(target=self._run, name="detector", daemon=True).start()
+        self._thread = threading.Thread(target=self._run, name="detector", daemon=True)
+        self._thread.start()
         threading.Thread(target=self._reaper, name="track-reaper", daemon=True).start()
 
     def stop(self) -> None:
         self._stop.set()
         with self._cv:
             self._cv.notify_all()
+
+    def stalled(self, limit_s: float) -> Optional[str]:
+        """Why detection has stopped working, or None if it's fine. A GPU fault (e.g. NVIDIA Xid from another
+        program) can leave a CUDA call hanging forever without raising, which silently stops all detection."""
+        if self._thread is None or self._stop.is_set():
+            return None
+        if not self._thread.is_alive():
+            return "thread has exited"
+        busy = self._busy_since
+        if busy is not None and time.monotonic() - busy > limit_s:
+            return f"stuck on one batch for {time.monotonic() - busy:.0f} s"
+        return None
 
     def submit(self, cam: str, img: np.ndarray, ts: float) -> None:
         with self._cv:
@@ -178,30 +193,37 @@ class Detector:
                 self._pending.clear()
             if not batch:
                 continue
-            t0 = time.perf_counter()
+            self._busy_since = time.monotonic()
             try:
-                results = self._model.predict([b[1][0] for b in batch], conf=self.cfg.confidence,
-                                              classes=self._class_ids, device=self.cfg.device,
-                                              verbose=False)
+                self._process(batch)
+            finally:
+                self._busy_since = None
+
+    def _process(self, batch: list) -> None:
+        t0 = time.perf_counter()
+        try:
+            results = self._model.predict([b[1][0] for b in batch], conf=self.cfg.confidence,
+                                          classes=self._class_ids, device=self.cfg.device,
+                                          verbose=False)
+        except Exception:  # noqa: BLE001
+            log.exception("inference failed")
+            time.sleep(1)
+            return
+        self.stats["infer_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+        self.stats["batches"] += 1
+        for (cam, (img, ts)), res in zip(batch, results):
+            try:
+                with self._tlock:                       # only track-table mutation under the lock
+                    new, upd, seen, plate_jobs = self._handle(cam, img, ts, res)
+                for t in plate_jobs:                    # slow: decodes main-stream GOP
+                    self._read_plate(cam, t)
+                for t in new:
+                    self.on_track_new(t)
+                for t in upd:
+                    self.on_track_update(t)
+                self.on_frame_tracks(cam, ts, seen)
             except Exception:  # noqa: BLE001
-                log.exception("inference failed")
-                time.sleep(1)
-                continue
-            self.stats["infer_ms"] = round((time.perf_counter() - t0) * 1000, 1)
-            self.stats["batches"] += 1
-            for (cam, (img, ts)), res in zip(batch, results):
-                try:
-                    with self._tlock:                       # only track-table mutation under the lock
-                        new, upd, seen, plate_jobs = self._handle(cam, img, ts, res)
-                    for t in plate_jobs:                    # slow: decodes main-stream GOP
-                        self._read_plate(cam, t)
-                    for t in new:
-                        self.on_track_new(t)
-                    for t in upd:
-                        self.on_track_update(t)
-                    self.on_frame_tracks(cam, ts, seen)
-                except Exception:  # noqa: BLE001
-                    log.exception("[%s] post-processing failed", cam)
+                log.exception("[%s] post-processing failed", cam)
 
     # -------------------------------------------------------------- tracking
     def _handle(self, cam: str, img: np.ndarray, ts: float, res):

@@ -10,6 +10,7 @@ import datetime as dt
 import json
 import logging
 import math
+import os
 import shutil
 import threading
 import time
@@ -94,6 +95,7 @@ class Hub:
             cam.start()
         if self.detector:
             self.detector.start()
+            threading.Thread(target=self._detector_guard, name="detector-guard", daemon=True).start()
         threading.Thread(target=self._ticker, name="hub-tick", daemon=True).start()
         if not self.db.one("SELECT 1 FROM vehicles LIMIT 1"):     # first run with vehicle tracking: seed from history
             threading.Thread(target=lambda: log.info("vehicles: seeded from %d past sightings", self.vehicles.backfill()),
@@ -468,6 +470,28 @@ class Hub:
                 log.warning("webhook %s failed: %s", url, e)
         threading.Thread(target=send, daemon=True).start()
 
+    def _detector_guard(self) -> None:
+        """If detection hangs or dies, restart the whole process (systemd's Restart=always brings it back).
+
+        Cameras and motion keep running while the detector is hung, so nothing else notices: on 2026-11-15 a
+        GPU fault caused by Chrome left YOLO stuck in a CUDA call and no events were recorded for 12 hours.
+        A hung CUDA call can't be cancelled from Python, and a fresh process gets a fresh GPU context.
+        """
+        while not self._stop.wait(15):
+            why = self.detector.stalled(DETECT_STALL_S)
+            if not why:
+                continue
+            log.critical("detector %s: restarting TheEye so detection resumes. Thread stacks follow.", why)
+            try:
+                import faulthandler
+                import sys
+                for h in logging.getLogger().handlers:
+                    h.flush()
+                faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+                sys.stderr.flush()
+            finally:
+                os._exit(3)
+
     def _retention(self) -> None:
         while not self._stop.wait(300):
             for step in (self._prune_clips, self._prune_snapshots, self._prune_history, self._rotate_log):
@@ -574,6 +598,7 @@ class Hub:
 
 TRACK_GRACE = 3.0
 PRUNE_BATCH = 2000
+DETECT_STALL_S = 90           # one detection batch normally takes well under a second
 MOTION_KEEP_DAYS, SOUND_KEEP_DAYS = 30, 7
 LOG_MAX_BYTES = 20_000_000
 
