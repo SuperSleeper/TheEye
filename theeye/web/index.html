@@ -223,7 +223,8 @@
             <input type="number" min="0" max="3600" step="5" data-k="detector.stationary_seconds" data-num>
             <span class="small muted">objects that haven't moved this long stop triggering events (e.g. parked cars); 0 = off</span></label>
           <label class="row"><input type="checkbox" data-k="detector.require_motion"> Require motion on the object
-            <span class="small muted">— objects only trigger events once motion is seen inside their box. People/animals never seen
+            <span class="small muted">— people and animals only trigger events once motion is seen inside their box; vehicles only
+              once they actually drive (motion in front of a parked car, like a bush or a shadow, doesn't count). People/animals never seen
               moving are hidden as false detections; vehicles and bags are still shown (grey) when stationary.</span></label>
         </div>
         <div class="sub-h">Objects to detect</div>

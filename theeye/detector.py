@@ -31,6 +31,7 @@ PLATE_RETRY_MAX_S = 30.0          # slowest retry for a vehicle whose plate hasn
 IOU_MATCH = 0.3
 TRAVEL_IOU = 0.5         # box overlap with where the track began; below this it has actually driven somewhere
 PARK_IOU = 0.8           # box overlap with where it last moved; above this counts as "hasn't moved"
+STILL_SPOT_IOU = 0.5
 PARK_MEMORY_S = 600.0    # remember parked spots this long, so a briefly occluded parked car stays parked
 
 
@@ -60,6 +61,8 @@ class Track:
     parked: bool = False             # hasn't moved for detector.stationary_seconds: rules ignore it
     seen_moving: bool = False        # motion seen inside its box at some point (sticky for the track)
     start_bbox: list[float] = field(default_factory=list)   # where the track began
+    at_still_spot: bool = False      # began where a vehicle was just sitting: must drive to count as moving
+    travel_hits: int = 0             # consecutive checks with the box away from where it began
     travelled: bool = False          # the box itself left its starting spot (a parked car with a shadow or a
                                      # passer-by over it is "seen moving" but never travels)
     confirmed: bool = True           # counts for rules: seen moving, or motion confirmation is off
@@ -102,6 +105,7 @@ class Detector:
         self._stop = threading.Event()
         self.tracks: dict[str, dict[str, Track]] = {}
         self._parked_spots: dict[str, list[tuple[str, list[float], float]]] = {}   # cam -> (label, bbox, last seen)
+        self._still_spots: dict[str, list[tuple[str, list[float], float]]] = {}    # vehicles that ended without driving
         # Persisted so a restart doesn't make every parked car look newly arrived for stationary_seconds.
         self._spots_file = snap_dir.parent / "parked_spots.json"
         self._load_spots()
@@ -268,20 +272,27 @@ class Detector:
                 self._seq += 1
                 best = Track(f"{cam}:{int(ts)}:{self._seq}", cam, label, nb, conf, ts, ts)
                 best.still_bbox, best.still_since, best.start_bbox = nb, ts, nb
+                best.at_still_spot = label in VEHICLES and self._was_still_here(cam, label, nb, ts)
                 if self._was_parked_here(cam, label, nb, ts):   # reappeared in a known parked spot
                     best.still_since = ts - self.cfg.stationary_seconds
                 cam_tracks[best.key] = best
             else:
                 unmatched.discard(best.key)
             best.bbox, best.conf, best.last_ts, best.hits = nb, conf, ts, best.hits + 1
-            if not best.travelled and _iou(best.start_bbox, nb) < TRAVEL_IOU:
-                best.travelled = True
+            if not best.travelled:                    # two checks in a row: one bad box isn't travel
+                best.travel_hits = best.travel_hits + 1 if _iou(best.start_bbox, nb) < TRAVEL_IOU else 0
+                best.travelled = best.travel_hits >= 2
             if _iou(best.still_bbox, nb) < PARK_IOU:          # it moved: restart the stillness clock
                 best.still_bbox, best.still_since = nb, ts
             best.parked = self.cfg.stationary_seconds > 0 and ts - best.still_since >= self.cfg.stationary_seconds
             if not best.seen_moving and self.motion_in_box is not None:
                 best.seen_moving = self.motion_in_box(cam, nb) >= self.cfg.motion_min_fraction
-            best.confirmed = best.seen_moving or not self.cfg.require_motion or self.motion_in_box is None
+            # Motion inside the box confirms an object, except a vehicle that reappears where a vehicle was just
+            # sitting: then it must actually drive. Otherwise a bush or a shadow in front of a parked car started
+            # a recording every time the detector lost the car for a moment and picked it up again. (Requiring
+            # travel for every vehicle missed fast cars, which move too far between checks to stay one track.)
+            moved = best.travelled or (best.seen_moving and not best.at_still_spot)
+            best.confirmed = moved or not self.cfg.require_motion or self.motion_in_box is None
             best.zones |= zids
             if conf > best.best_conf * 1.05:
                 best.best_conf, best.best_bbox = conf, nb
@@ -305,6 +316,11 @@ class Detector:
                 best.announced = True
                 seen.append(best)
         return new, upd, seen, plate_jobs
+
+    def _was_still_here(self, cam: str, label: str, bbox: list[float], ts: float) -> bool:
+        spots = [s for s in self._still_spots.get(cam, []) if ts - s[2] < PARK_MEMORY_S]
+        self._still_spots[cam] = spots
+        return any(lbl == label and _iou(b, bbox) >= STILL_SPOT_IOU for lbl, b, _ in spots)
 
     def _was_parked_here(self, cam: str, label: str, bbox: list[float], ts: float) -> bool:
         if self.cfg.stationary_seconds <= 0:
@@ -371,6 +387,8 @@ class Detector:
                 for t in ended:            # remember where parked objects were, in case they reappear
                     if t.parked:
                         self._parked_spots.setdefault(t.camera_id, []).append((t.label, t.bbox, t.last_ts))
+                    if t.label in VEHICLES and not t.travelled and t.hits >= 3:   # sat there, didn't drive
+                        self._still_spots.setdefault(t.camera_id, []).append((t.label, t.bbox, t.last_ts))
             for t in ended:            # outside the lock: snapshot/embedding work is slow
                 try:
                     self.on_track_end(t)
