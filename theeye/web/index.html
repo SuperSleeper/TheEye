@@ -256,16 +256,21 @@
         <p class="muted small">Uses a self-signed certificate created on first start, so browsers show a warning once —
           choose “Advanced → Proceed”. To use your own certificate, set <code>cert_file</code> and <code>key_file</code> in config.yaml.</p>
       </div>
-      <div class="card-s">
-        <div class="card-h"><h2>Sign-in</h2><span class="muted small">Signed in as <b id="acct-user"></b></span></div>
+      <details class="card-s" id="acct-card">
+        <summary class="card-h"><h2>Sign-in</h2><span class="muted small">Signed in as <b id="acct-user"></b></span></summary>
+        <!-- The password form only exists while this card is open, so password managers don't autofill it
+             (or the camera logins) while you're editing the rest of Setup. -->
+        <div id="acct-pw-slot"></div>
+        <template id="acct-pw-tpl">
         <form id="acct-pw-form" class="fgrid" autocomplete="on">
           <input type="text" name="username" autocomplete="username" class="hidden" tabindex="-1" aria-hidden="true">
           <label>Current password <input type="password" name="current" autocomplete="current-password" required maxlength="256"></label>
           <label>New password <input type="password" name="new" autocomplete="new-password" required minlength="8" maxlength="256"></label>
           <label>Repeat new password <input type="password" name="repeat" autocomplete="new-password" required maxlength="256"></label>
-          <div class="row"><button type="submit">Change password</button>
-            <button type="button" id="acct-logout-all">Sign out all other devices</button></div>
+          <div class="row"><button type="submit">Change password</button></div>
         </form>
+        </template>
+        <div class="row"><button type="button" id="acct-logout-all">Sign out all other devices</button></div>
         <p id="acct-pw-msg" class="small"></p>
         <p class="muted small">Forgot it? On the TheEye computer run <code>./run.sh --set-password</code>.</p>
         <div class="sub-h">External triggers</div>
@@ -274,7 +279,7 @@
         <div class="row"><button type="button" id="acct-hook-new">Generate token</button>
           <button type="button" id="acct-hook-revoke" class="danger hidden">Revoke</button></div>
         <p id="acct-token-box" class="small hidden">Copy it now — it won't be shown again:<br><code id="acct-token"></code></p>
-      </div>
+      </details>
       <p class="muted small" id="cfg-path"></p>
     </div>
     <div class="savebar" id="cfg-savebar">

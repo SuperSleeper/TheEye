@@ -111,12 +111,13 @@ function initLive() {
   grid.innerHTML = cameras.length ? cameras.map(c => `
     <div class="tile" data-cam="${esc(c.id)}">
       <div style="position:relative"><img alt="" draggable="false"><canvas></canvas><div class="tile-msg">Connecting…</div></div>
-      <div class="bar"><span class="grip" title="Drag to reorder">⠿</span><span class="name">${esc(c.name)}</span>
-        <span class="badge st"></span><span class="badge recb hidden rec">REC</span>
-        <span class="muted ring"></span>
-        <span class="snd hidden" title="Sound level right now (dBFS)"><i><b></b></i><span></span></span>
-        <button class="recnow">● Record 30s</button>
-        <button class="cfg" title="Edit this camera in Setup">⚙</button></div>
+      <div class="bar">
+        <div class="bar-top"><span class="grip" title="Drag to reorder">⠿</span><span class="name" title="${esc(c.name)}">${esc(c.name)}</span>
+          <span class="badge st"></span><span class="badge recb hidden rec">REC</span>
+          <button class="recnow" title="Record the next 30 seconds">● Record 30s</button>
+          <button class="cfg" title="Edit this camera in Setup">⚙</button></div>
+        <div class="bar-sub"><span class="ring"></span>
+          <span class="snd hidden" title="Sound level right now (dBFS)"><i><b></b></i><span></span></span></div></div>
     </div>`).join('') : '<p class="muted">No cameras configured — add them on the Setup tab.</p>';
   $$('.tile', grid).forEach(tile => {
     $('.cfg', tile).onclick = () => editCamera(tile.dataset.cam);
@@ -140,7 +141,7 @@ function initLive() {
       const msg = $('.tile-msg', tile);
       msg.classList.toggle('hidden', live && tile.dataset.frames === '1');
       if (!live) msg.textContent = friendlyCamError(c.status.main_err, c.status.main);
-      $('.ring', tile).textContent = `loop ${c.ring.seconds}s · ${(c.ring.bytes / 1e6).toFixed(0)} MB`;
+      $('.ring', tile).textContent = `loop ${Math.floor(c.ring.seconds)}s · ${(c.ring.bytes / 1e6).toFixed(0)} MB`;
       const snd = $('.snd', tile);
       snd.classList.toggle('hidden', c.sound_db == null);
       if (c.sound_db != null) {
@@ -888,7 +889,7 @@ function showVals() { $$('#tab-setup [data-show]').forEach(s => s.textContent = 
 function camSummary(c, i) {
   const p = S.probe[i]?.main;
   const where = c.brand === 'custom' ? (c.main_url || 'no URL') : `${S.brands[c.brand]?.label.split(' ')[0] || c.brand} · ${c.host || 'no host'}`;
-  const st = p ? (p.ok ? `<span class="good">✓ ${p.width}×${p.height} ${p.codec}</span>` : '<span class="warn">✗ test failed</span>') : '';
+  const st = !p ? '' : p.pending ? '<span class="muted">testing…</span>' : p.ok ? `<span class="good">✓ ${p.width}×${p.height} ${p.codec}</span>` : '<span class="warn">✗ test failed</span>';
   return `${p?.snapshot ? `<img src="${p.snapshot}">` : ''}<span class="t">${esc(c.name || c.id || 'New camera')}</span>
     <span class="muted small">${esc(c.id)} · ${esc(where)}</span>${c.enabled ? '' : '<span class="badge">disabled</span>'} ${st}
     <button type="button" class="cam-edit${S.open.has(i) ? '' : ' primary'}">${S.open.has(i) ? 'Close ▴' : 'Edit ▾'}</button>`;
@@ -1178,7 +1179,17 @@ async function loadAccount() {
   $('#acct-hook-state').textContent = s.hook_token ? 'A token is set. Generating a new one replaces it.' : 'No token: external triggers are refused.';
   $('#acct-hook-revoke').classList.toggle('hidden', !s.hook_token);
 }
-$('#acct-pw-form').onsubmit = async e => {
+// Collapsed by default; the form is cloned in on open and removed on close (see index.html).
+$('#acct-card').ontoggle = () => {
+  const slot = $('#acct-pw-slot');
+  slot.replaceChildren();
+  $('#acct-pw-msg').textContent = '';
+  if (!$('#acct-card').open) return;
+  slot.append($('#acct-pw-tpl').content.cloneNode(true));
+  $('#acct-pw-form').onsubmit = changePassword;
+  $('#acct-pw-form [name=current]').focus();
+};
+async function changePassword(e) {
   e.preventDefault();
   const f = e.target, msg = $('#acct-pw-msg');
   msg.className = 'small'; msg.textContent = '';
@@ -1187,7 +1198,7 @@ $('#acct-pw-form').onsubmit = async e => {
     await api('/api/auth/password', { method: 'POST', body: { current: f.current.value, new: f.new.value } });
     f.reset(); msg.className = 'small ok'; msg.textContent = 'Password changed. Other devices were signed out.';
   } catch (x) { msg.className = 'small err'; msg.textContent = errText(x); }
-};
+}
 $('#acct-logout-all').onclick = async () => {
   await api('/api/auth/logout-all', { method: 'POST' });
   $('#acct-pw-msg').className = 'small ok'; $('#acct-pw-msg').textContent = 'All other devices were signed out.';
