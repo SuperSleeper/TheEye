@@ -144,6 +144,7 @@ class DB:
         "events": {
             "trigger_ts": "REAL",                         # when the rule fired (start_ts = trigger_ts - preroll)
             "thumb_score": "REAL NOT NULL DEFAULT 0",     # quality of the object-centered thumbnail in use
+            "plates_refined": "REAL",                     # when plates were read again over the recording
         },
         "zones": {
             "ai": "INTEGER NOT NULL DEFAULT 1",           # objects only count when their base is inside such a zone
@@ -153,6 +154,8 @@ class DB:
             "moving": "INTEGER",                          # box travelled during the track (NULL = not recorded)
             "kind": "TEXT",                               # animal it really is, when not the label (squirrel for "bird")
             "subtype": "TEXT",                            # breed / species (crow, pomeranian)
+            "plate_reads": "INTEGER",                     # frames the plate was read in (recording re-read)
+            "plate_agree": "INTEGER",                     # of those, frames that read exactly the final text
             "subtype_conf": "REAL",                       # certainty of kind/subtype; 0 = looked, kept the label
         },
     }

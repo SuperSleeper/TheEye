@@ -148,6 +148,7 @@ class DetectorConfig(BaseModel):
     plates: bool = True
     plate_detector: str = "yolo-v9-t-384-license-plate-end2end"
     plate_ocr: str = "cct-xs-v2-global-model"
+    plates_refine: bool = False        # (off until tuned) read plates again over the saved recording when the machine is quiet
     embeddings: bool = True            # CLIP embeddings for visual search
     clip_model: str = "ViT-B-32"
     clip_pretrained: str = "laion2b_s34b_b79k"

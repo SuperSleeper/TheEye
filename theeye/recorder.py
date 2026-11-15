@@ -387,3 +387,43 @@ class RecordingManager:
         with self._lock:
             return {c: {"path": w.rel, "holds": w.holds, "mb": round(w.bytes / 1e6, 1)}
                     for c, w in self._writers.items() if not w.done.is_set()}
+
+
+def repair_clip(path: Path) -> Optional[float]:
+    """Rewrite a clip cut off mid-write (TheEye stopped while recording), keeping every packet that can still be
+    read, so the browser doesn't stall on the broken tail and show a blank player. Returns the seconds kept,
+    or None if nothing usable was left (the file is then deleted)."""
+    tmp = path.with_suffix(".repair.mp4")
+    kept = 0.0
+    try:
+        with av.open(str(path)) as src:
+            streams = [s for s in src.streams if s.type in ("video", "audio")]
+            with av.open(str(tmp), "w", format="mp4",
+                         options={"movflags": "frag_keyframe+empty_moov+default_base_moof"}) as out:
+                omap = {s.index: out.add_stream_from_template(s) for s in streams}
+                vid = next((s for s in streams if s.type == "video"), None)
+                check = av.CodecContext.create(vid.codec_context.name, "r") if vid else None
+                if check is not None and vid.codec_context.extradata:
+                    check.extradata = vid.codec_context.extradata
+                try:
+                    for pkt in src.demux(streams):
+                        if pkt.dts is None or pkt.size == 0:
+                            continue
+                        if pkt.stream.type == "video":
+                            check.decode(pkt)            # a packet cut short by the stop fails here
+                            if pkt.pts is not None:
+                                kept = max(kept, float(pkt.pts * pkt.time_base))
+                        pkt.stream = omap[pkt.stream.index]
+                        out.mux(pkt)
+                except (av.error.InvalidDataError, av.error.EOFError, ValueError):
+                    pass                                  # the cut-off end: stop before the first broken packet
+    except Exception:  # noqa: BLE001
+        log.warning("clip %s couldn't be read for repair", path.name, exc_info=True)
+        tmp.unlink(missing_ok=True)
+        return None
+    if kept <= 0.5:
+        tmp.unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
+        return None
+    tmp.replace(path)
+    return kept

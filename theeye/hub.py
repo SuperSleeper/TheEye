@@ -32,6 +32,7 @@ from .motion import MotionEngine, Zone
 from .recorder import RecordingManager
 from .vehicles import VehicleRegistry
 from .rules import CamState, Rule, evaluate, is_loud
+from .plates import PlateRefiner
 from .subtypes import ANIMAL_LABELS, SubtypeClassifier
 
 log = logging.getLogger("theeye.hub")
@@ -67,6 +68,7 @@ class Hub:
         self.embedder = (Embedder(cfg.detector.clip_model, cfg.detector.clip_pretrained, cfg.detector.device)
                          if cfg.detector.embeddings else None)
         self.animals = SubtypeClassifier(cfg.animals, self.embedder) if self.embedder else None
+        self.plates = PlateRefiner(self)
         self.detector: Optional[Detector] = None
         if cfg.detector.enabled:
             self.detector = Detector(cfg.detector, self.data / "snaps", self.motion.zones_for,
@@ -99,12 +101,15 @@ class Hub:
             self.detector.start()
             threading.Thread(target=self._detector_guard, name="detector-guard", daemon=True).start()
             threading.Thread(target=self._interim_snapshots, name="interim-snapshots", daemon=True).start()
+            if self.cfg.detector.plates:
+                self.plates.start()
         threading.Thread(target=self._ticker, name="hub-tick", daemon=True).start()
         if not self.db.one("SELECT 1 FROM vehicles LIMIT 1"):     # first run with vehicle tracking: seed from history
             threading.Thread(target=lambda: log.info("vehicles: seeded from %d past sightings", self.vehicles.backfill()),
                              name="vehicle-backfill", daemon=True).start()
         threading.Thread(target=self._retention, name="retention", daemon=True).start()
         threading.Thread(target=self._animal_backfill, name="animal-backfill", daemon=True).start()
+        threading.Thread(target=self._repair_interrupted, name="clip-repair", daemon=True).start()
 
     def stop(self) -> None:
         self._stop.set()
@@ -200,6 +205,19 @@ class Hub:
                 end = max(end, (self.data / e["clip_path"]).stat().st_mtime)
             self.db.execute("UPDATE events SET end_ts=?, note=COALESCE(note,'interrupted') WHERE id=?",
                             (end, e["id"]))
+
+    def _repair_interrupted(self) -> None:
+        """Clips cut off by a stop mid-write end in a broken chunk the browser can stall on (blank player)."""
+        from .recorder import repair_clip
+        for e in self.db.all("SELECT id, clip_path FROM events WHERE note = 'interrupted' AND clip_path IS NOT NULL"):
+            p = self.data / e["clip_path"]
+            kept = repair_clip(p) if p.exists() else None
+            if kept is None:
+                self.db.execute("UPDATE events SET clip_path=NULL, note='interrupted, no usable video' WHERE id=?",
+                                (e["id"],))
+            else:
+                self.db.execute("UPDATE events SET note='interrupted, repaired' WHERE id=?", (e["id"],))
+            log.info("event %d: interrupted clip %s", e["id"], f"repaired ({kept:.0f} s kept)" if kept else "unusable")
 
     def _seed_defaults(self) -> None:
         if self.db.one("SELECT 1 FROM rules LIMIT 1"):
@@ -677,6 +695,7 @@ class Hub:
         return {"ram_bytes": ram, "ram_budget": self.cfg.storage.ram_budget_gb * 1e9,
                 "recording": self.rec.active(),
                 "detector": self.detector.stats if self.detector else None,
+                "plates": self.plates.stats,
                 "open_events": len(self._open_events),
                 "disk_free": shutil.disk_usage(self.data).free}
 

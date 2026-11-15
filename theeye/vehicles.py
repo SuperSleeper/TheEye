@@ -136,6 +136,17 @@ class VehicleRegistry:
             self.db.execute("UPDATE vehicles SET status=?, visits=?, note=COALESCE(?, note) WHERE id=?",
                             (status, v.visits, note, vid))
 
+    def set_plate(self, vid: int, plate: str, conf: float) -> None:
+        """A plate read more surely later (theeye.plates), e.g. over the whole recording."""
+        if conf < 0.6 or len(plate) < 5:
+            return
+        with self._lock:
+            v = self._v.get(vid)
+            if v is None or v.plate == plate:
+                return
+            v.plate = plate
+            self.db.execute("UPDATE vehicles SET plate=? WHERE id=?", (plate, vid))
+
     def backfill(self) -> int:
         """Seed from past detections. Ones recorded with travel info use it; older ones didn't store it, so a
         box that sits where vehicles were also seen on PARKED_REPEATS other visits is taken as a parked car."""
