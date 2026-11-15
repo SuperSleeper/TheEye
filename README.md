@@ -56,6 +56,22 @@ throwaway test install with its own config and data.
 
 The first start downloads the YOLO, plate and CLIP weights (about 400 MB).
 
+### Run it as a service (recommended)
+
+```bash
+service/install.sh                   # or: service/install.sh /some/other/install-folder
+```
+
+This installs a systemd **user** service, so TheEye keeps running after you close the terminal or log out and starts at boot.
+systemd restarts it within 10 s if it crashes. A watchdog timer checks the web UI every minute and restarts the service
+if it stops answering 3 times in a row (it waits 2 minutes after each start). Logs still go to `<install-folder>/theeye.log`.
+
+```bash
+systemctl --user status theeye       # restart / stop / start the same way
+journalctl --user -u theeye-watchdog # health-check history
+service/install.sh --uninstall
+```
+
 The web UI is served over **HTTPS** with a self-signed certificate made for this machine's names and addresses
 (renewed automatically when they change or it nears expiry). Browsers warn the first time: choose *Advanced → Proceed*,
 or import `tls/cert.pem` into your browser/OS as trusted to remove the warning. To use your own certificate, set
