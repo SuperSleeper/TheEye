@@ -31,6 +31,7 @@ function showTab(name) {
   Object.values(timers).forEach(clearInterval);
   for (const k in timers) delete timers[k];
   if (name !== 'live') { $('#live-grid').innerHTML = ''; closeFocus?.(); }
+  queueMicrotask(() => lvUpdate());
   ({ live: initLive, events: loadEvents, triggers: loadTriggers, zones: initZones, rules: initRules, setup: () => initSetup(), search: () => $('#search-q').focus(), vehicles: loadVehicles })[name]?.();
   location.hash = name;
   $('#overlay-toggles').hidden = name !== 'live';       // overlays only exist on Live
@@ -110,7 +111,7 @@ function initLive() {
   const grid = $('#live-grid');
   grid.innerHTML = cameras.length ? cameras.map(c => `
     <div class="tile" data-cam="${esc(c.id)}">
-      <div style="position:relative"><img alt="" draggable="false"><canvas></canvas><div class="tile-msg">Connecting…</div></div>
+      <div style="position:relative"><img alt="" draggable="false">${LIVE_VIDEO_ENABLED ? '<video muted playsinline disablepictureinpicture></video>' : ''}<canvas></canvas><div class="tile-msg">Connecting…</div></div>
       <div class="bar">
         <div class="bar-top"><span class="grip" title="Drag to reorder">⠿</span><span class="name" title="${esc(c.name)}">${esc(c.name)}</span>
           <span class="badge st"></span><span class="badge recb hidden rec">REC</span>
@@ -119,6 +120,7 @@ function initLive() {
         <div class="bar-sub"><span class="ring"></span><span class="lat hidden"></span>
           <span class="snd hidden" title="Sound level right now (dBFS)"><i><b></b></i><span></span></span></div></div>
     </div>`).join('') : '<p class="muted">No cameras configured — add them on the Setup tab.</p>';
+  lvReset(grid);
   $$('.tile', grid).forEach(tile => {
     $('.cfg', tile).onclick = () => editCamera(tile.dataset.cam);
     tile.firstElementChild.ondblclick = () => openFocus(tile.dataset.cam);
@@ -151,11 +153,19 @@ function initLive() {
       }
       api(`/api/cameras/${encodeURIComponent(id)}/state`).then(s => {
         $('.recb', tile).classList.toggle('hidden', !s.recording);
-        drawOverlay($('canvas', tile), $('img', tile), s, id);
+        const hist = tile._st ||= [];
+        hist.push({ t: performance.now(), s }); while (hist.length > 30) hist.shift();
+        const vid = tile.dataset.vid === '1';
+        let shown = s;
+        if (vid) {          // boxes come from live detection; the video runs behind, so show the boxes from back then
+          const at = performance.now() - lvOverlayDelay(tile, c) * 1000;
+          shown = [...hist].reverse().find(h => h.t <= at)?.s ?? hist[0].s;
+        }
+        drawOverlay($('canvas', tile), vid ? $('video', tile) : $('img', tile), shown, id);
       }).catch(() => {});
     }
   };
-  timers.live = setInterval(tick, 500); tick();
+  timers.live = setInterval(() => { tick(); lvTick(); }, 500); tick();
 }
 
 // How far behind real time the tile's picture is. Per frame: the server's X-Frame-Age (stream lag when the
@@ -170,14 +180,191 @@ function showLatency(tile, c, live) {
   el.classList.toggle('hidden', !live || total == null);
   if (!live || total == null) return;
   const net = samples.length ? Math.max(...samples.map(x => x.net)) : null;
+  const buf = samples.some(x => x.buf != null) ? Math.max(...samples.map(x => x.buf || 0)) : null;
   const fmt = v => v < 1 ? `${Math.round(v * 1000)} ms` : `${v.toFixed(1)} s`;
   el.textContent = `⏱ ${fmt(total)}`;
   el.className = 'lat' + (total >= 3 ? ' bad' : total >= 1 ? ' warn' : '');
   el.title = `Live picture is about ${fmt(total)} behind real time.\n`
     + (stream != null ? `• Camera → server: +${fmt(stream)} over its best in the last minute\n` : '')
     + (net != null ? `• Server → this browser: ${fmt(net)}\n` : '')
+    + (buf != null ? `• Video buffered in this browser: ${fmt(buf)}\n` : '')
     + (c.feed === 'sub' && c.lag?.main != null ? `• Recording (main) stream: +${fmt(c.lag.main)}\n` : '')
     + `The camera's own encoding/network delay isn't included: these cameras don't send a clock to measure it against.`;
+}
+
+// ---- live video tiles
+// Snapshots by default on every device. Video crashed some browsers when every tile played at once (Chrome on
+// Linux/NVIDIA, iPad Safari), so it's opt-in via the ▶ Video button, remembered per browser. If the page dies
+// while video is on, the next load comes back on snapshots (see LV_ARMED).
+// All tiles share ONE WebSocket (see /api/live/ws), because browsers allow only ~6 connections per site.
+// A tile shows its snapshot until its video actually plays, so it never goes blank.
+const LIVE_VIDEO_ENABLED = true;
+// Chrome on Linux with an NVIDIA GPU: decoding many tiles at once crashed Chrome's media process and then the
+// nvidia-drm display driver ("Failed to apply atomic modeset"), hanging the whole machine, not just the tab.
+// Not worth a retry, so video tiles are blocked there outright (the single full-window video still works).
+const GPU_BLOCKS_VIDEO = (() => {
+  const ua = navigator.userAgent;
+  if (!/Linux/.test(ua) || /Android/.test(ua)) return false;
+  try {
+    const gl = document.createElement('canvas').getContext('webgl');
+    if (!gl) return false;
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    const r = String(gl.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
+    return /nvidia/i.test(r);
+  } catch { return false; }
+})();
+const CAN_VIDEO = LIVE_VIDEO_ENABLED && !GPU_BLOCKS_VIDEO && !!(window.ManagedMediaSource || window.MediaSource);
+const LV_ARMED = 'theeye.liveVideoRunning';
+const LV = { mode: 'snap', crashed: false, ws: null, tiles: new Map(), visible: new Set(), sent: '', rtt: 0, io: null, ping: null, backoff: 1 };
+LV.mode = (() => {
+  if (!CAN_VIDEO) return 'snap';
+  let m = null, crashed = false;
+  try {
+    m = localStorage.getItem('theeye.liveMode');
+    crashed = !!localStorage.getItem(LV_ARMED);    // set while video plays, cleared when the page closes normally
+    if (crashed) { localStorage.setItem('theeye.liveMode', 'snap'); localStorage.removeItem(LV_ARMED); }
+  } catch { /* private mode */ }
+  if (crashed) { LV.crashed = true; return 'snap'; }
+  return m === 'video' ? 'video' : 'snap';
+})();
+// Crash guard: mark "video running" while any tile streams, unmark on a normal page close.
+function lvArm(on) { try { on ? localStorage.setItem(LV_ARMED, String(Date.now())) : localStorage.removeItem(LV_ARMED); } catch { /* ignore */ } }
+addEventListener('pagehide', () => lvArm(false));
+function syncLiveModeButton() {
+  const b = $('#live-mode');
+  b.setAttribute('aria-pressed', String(LV.mode === 'video'));
+  b.hidden = !CAN_VIDEO;                // not offered where it can't (or mustn't) play
+  b.title = !LIVE_VIDEO_ENABLED ? 'Video tiles are turned off'
+    : GPU_BLOCKS_VIDEO ? 'Video tiles are off on Linux with an NVIDIA GPU: playing them hung the whole machine (display driver crash). Double-click a tile for full-window video'
+    : LV.crashed && LV.mode === 'snap' ? 'Switched back to snapshots: the page closed unexpectedly while video tiles were playing. Click to try video again'
+    : !CAN_VIDEO ? "This browser can't play live video tiles (no Media Source support)"
+    : LV.mode === 'video' ? 'Live tiles show video. Click for snapshots (less data, better for phones)'
+    : 'Live tiles show snapshots. Click for full-frame-rate video (more data)';
+}
+$('#live-mode').onclick = () => {
+  LV.mode = LV.mode === 'video' ? 'snap' : 'video';
+  try { localStorage.setItem('theeye.liveMode', LV.mode); } catch { /* not persisted */ }
+  syncLiveModeButton(); lvUpdate();
+};
+syncLiveModeButton();
+document.addEventListener('visibilitychange', () => lvUpdate());
+
+function lvReset(grid) {                 // grid rebuilt: forget old tiles, watch which new ones are on screen
+  for (const id of [...LV.tiles.keys()]) lvTeardown(id);
+  LV.visible.clear(); LV.io?.disconnect();
+  if (!CAN_VIDEO) return;
+  LV.io = new IntersectionObserver(entries => {
+    for (const e of entries) LV.visible[e.isIntersecting ? 'add' : 'delete'](e.target.dataset.cam);
+    lvUpdate();
+  });
+  $$('.tile', grid).forEach(t => LV.io.observe(t));
+}
+function lvWanted() {
+  if (LV.mode !== 'video' || document.hidden || F.cam || !$('#tab-live').classList.contains('active')) return [];
+  return [...LV.visible].filter(id => $(`#live-grid .tile[data-cam="${CSS.escape(id)}"]`)).sort();
+}
+function lvUpdate() {
+  const ids = lvWanted();
+  for (const id of [...LV.tiles.keys()]) if (!ids.includes(id)) lvTeardown(id);
+  if (!ids.length) {
+    if (LV.ws) { const ws = LV.ws; LV.ws = null; ws.close(); }
+    lvArm(false);
+    return;
+  }
+  lvArm(true);
+  if (!LV.ws) return lvConnect();
+  if (LV.ws.readyState === WebSocket.OPEN && ids.join() !== LV.sent) {
+    LV.sent = ids.join(); LV.ws.send(JSON.stringify({ cams: ids }));
+  }
+}
+function lvConnect() {
+  const ws = LV.ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/live/ws`);
+  ws.binaryType = 'arraybuffer';
+  LV.sent = '';
+  ws.onopen = () => {
+    LV.backoff = 1; lvUpdate();
+    LV.ping = setInterval(() => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ ping: performance.now() })), 5000);
+    ws.send(JSON.stringify({ ping: performance.now() }));
+  };
+  ws.onclose = () => {
+    clearInterval(LV.ping);
+    if (LV.ws !== ws) return;                          // closed on purpose
+    LV.ws = null;
+    for (const id of [...LV.tiles.keys()]) lvTeardown(id);
+    LV.backoff = Math.min(LV.backoff * 2, 30);         // tiles fall back to snapshots meanwhile
+    setTimeout(lvUpdate, LV.backoff * 1000);
+  };
+  ws.onmessage = e => {
+    if (typeof e.data === 'string') {
+      const m = JSON.parse(e.data);
+      if (m.pong != null) LV.rtt = (performance.now() - m.pong) / 1000;
+      else if (m.mime) lvStart(m.cam, m.mime);
+      else if (m.end) lvTeardown(m.cam);
+      return;
+    }
+    const dv = new DataView(e.data), n = dv.getUint8(0);
+    const t = LV.tiles.get(new TextDecoder().decode(new Uint8Array(e.data, 1, n)));
+    if (!t) return;
+    t.age = dv.getFloat64(1 + n); t.rx = performance.now();
+    t.pending.push(new Uint8Array(e.data, 9 + n)); t.feed();
+  };
+}
+function lvStart(id, mime) {
+  lvTeardown(id);
+  const tile = $(`#live-grid .tile[data-cam="${CSS.escape(id)}"]`);
+  const MS = window.ManagedMediaSource || window.MediaSource;
+  if (!tile || !MS?.isTypeSupported(mime)) return;      // stays on snapshots
+  const v = $('video', tile), ms = new MS();
+  const t = { v, ms, tile, pending: [], sb: null, url: URL.createObjectURL(ms), age: null, rx: 0 };
+  t.feed = () => {
+    const sb = t.sb;
+    if (!sb || sb.updating || !t.pending.length || ms.readyState !== 'open' || LV.tiles.get(id) !== t) return;
+    const b = v.buffered;                                 // keep ~10 s per tile
+    if (b.length && v.currentTime - b.start(0) > 10) { sb.remove(b.start(0), v.currentTime - 4); return; }
+    const chunk = t.pending.shift();
+    try { sb.appendBuffer(chunk); }
+    catch (e) {
+      if (e.name === 'QuotaExceededError' && b.length) { t.pending.unshift(chunk); sb.remove(b.start(0), Math.max(b.start(0) + 1, v.currentTime - 2)); }
+      else lvTeardown(id);
+    }
+  };
+  LV.tiles.set(id, t);
+  v.disableRemotePlayback = true;                       // required by ManagedMediaSource (Safari)
+  v.src = t.url;
+  ms.addEventListener('sourceopen', () => {
+    if (LV.tiles.get(id) !== t) return;
+    try { t.sb = ms.addSourceBuffer(mime); } catch { lvTeardown(id); return; }
+    t.sb.addEventListener('updateend', t.feed); t.feed();
+  }, { once: true });
+  v.onplaying = () => { if (LV.tiles.get(id) === t) { tile.dataset.vid = '1'; tile.classList.add('vid'); } };
+  v.play().catch(() => {});
+}
+function lvTeardown(id) {
+  const t = LV.tiles.get(id);
+  if (!t) return;
+  LV.tiles.delete(id);
+  t.tile.dataset.vid = '0'; t.tile.classList.remove('vid');
+  t.v.onplaying = null; t.v.pause(); t.v.removeAttribute('src'); t.v.load();
+  URL.revokeObjectURL(t.url);
+}
+function lvTick() {                      // every 500 ms: stay at the live edge, and measure how far behind we are
+  const now = performance.now();
+  for (const t of LV.tiles.values()) {
+    const v = t.v, b = v.buffered;
+    if (!b.length || v.seeking) continue;
+    const end = b.end(b.length - 1);
+    if (end - v.currentTime > 1.5 || v.currentTime < b.start(b.length - 1)) v.currentTime = Math.max(b.start(b.length - 1), end - 0.2);
+    if (t.tile.dataset.vid === '1' && t.age != null) {
+      const buf = Math.max(0, end - v.currentTime), net = LV.rtt / 2;
+      (t.tile._lat ||= []).push({ t: now, age: t.age + (now - t.rx) / 1000 + buf, net, buf });
+    }
+  }
+}
+function lvOverlayDelay(tile, c) {       // seconds the video is behind the live detection state
+  const last = (tile._lat || []).at(-1);
+  if (!last) return 0;
+  return Math.max(0, Math.min(10, last.age + last.net - (c.lag?.[c.feed] ?? 0)));
 }
 
 // Live view polls single JPEGs instead of MJPEG: an endless MJPEG response holds one of the browser's
@@ -188,7 +375,7 @@ function pumpFrames(tile) {
   let shown = null;
   const next = delay => setTimeout(async () => {
     if (!tile.isConnected) return;
-    if (document.hidden || F.cam) return next(1000);      // paused while a camera is full-window
+    if (document.hidden || F.cam || tile.dataset.vid === '1') return next(1000);   // paused: full-window view, or video plays
     const t0 = performance.now();
     try {
       const r = await fetch(`${url}?t=${Date.now()}`, { cache: 'no-store' });
@@ -260,6 +447,7 @@ function openFocus(id) {
   F.cam = id; F.retry = 0;
   $('#focus-name').textContent = c?.name || id; $('#focus-res').textContent = '';
   $('#focus').classList.remove('hidden');
+  lvUpdate();                                           // tiles stop streaming while full-window
   v.muted = false; updateFocusMute();
   startFocusStream();
   F.timers.push(setInterval(() => {                     // stay at the live edge; hop over small gaps
@@ -347,6 +535,7 @@ function closeFocus() {
   stopFocusStream();
   $('#focus').classList.add('hidden');
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  lvUpdate();                                           // tiles resume streaming
 }
 function updateFocusMute() {
   const v = $('#focus-video'); $('#focus-mute').textContent = v.muted ? '🔇 Unmute' : '🔊 Mute';

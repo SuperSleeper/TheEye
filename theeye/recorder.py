@@ -289,6 +289,7 @@ class LiveMP4:
         self.base: Optional[int] = None
         self.base_s: Optional[float] = None
         self.last_dts: Optional[int] = None
+        self.newest_wall: float = 0.0           # arrival time of the newest video packet muxed so far
         self._ready = threading.Event()
         for p in cam.ring.snapshot_and_subscribe(time.time(), self._feed):   # latest GOP onward
             self._put(p)
@@ -334,6 +335,7 @@ class LiveMP4:
         if self.last_dts is not None and dts - self.base <= self.last_dts:
             return
         self.last_dts = dts - self.base
+        self.newest_wall = p.wall
         pkt = av.Packet(p.data)
         pkt.pts, pkt.dts = pts - self.base, dts - self.base
         pkt.duration, pkt.time_base, pkt.is_keyframe, pkt.stream = p.duration, p.time_base, p.keyframe, self.ost

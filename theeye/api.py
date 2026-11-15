@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import struct
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
-from fastapi import Body, FastAPI, HTTPException, Query, Request
+from fastapi import Body, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -76,6 +79,12 @@ def _storage_scan(data: Path, hub: Hub, install: Path) -> dict:
 
 WEB = Path(__file__).parent / "web"
 
+# Live video tiles: each stream blocks a thread while it waits for packets, so they get their own pool
+# instead of starving the default one that the rest of the API uses.
+LIVE_POOL = ThreadPoolExecutor(max_workers=64, thread_name_prefix="live-tile")
+LIVE_MAX_STREAMS = 48            # across all viewers; beyond this, extra tiles stay on snapshots
+LIVE_SESSION_CHECK_S = 30        # re-check the sign-in this often, so signing out stops open streams
+
 
 class ZoneIn(BaseModel):
     camera_id: str
@@ -123,6 +132,8 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
     app = FastAPI(title="TheEye NVR", lifespan=lifespan)
     db = hub.db
     data = hub.data.resolve()
+    auth_store = auth.AuthStore(config_path.parent / "auth.json", db)
+    live_streams = {"n": 0}
 
     def cam_or_404(cam_id: str):
         c = hub.cams.get(cam_id)
@@ -188,6 +199,97 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
                 ls.close()
         return StreamingResponse(gen(), media_type="video/mp4",
                                  headers={"Cache-Control": "no-store", "X-Mime": ls.mime})
+
+    @app.websocket("/api/live/ws")
+    async def live_ws(ws: WebSocket):
+        """Live video for the tiles: every camera's H.264 as fMP4 over ONE WebSocket (browsers allow only ~6
+        HTTP connections per site, so one stream per tile would block the rest of the page).
+
+        Client -> {"cams": [ids]} picks the cameras to send; {"ping": t} -> {"pong": t}.
+        Server -> {"cam", "mime"} before a (re)started stream, {"cam", "end": true} when one stops,
+                  and binary frames: [u8 id length][id][f64 age seconds][fMP4 bytes], where age is how far
+                  behind real time the newest frame in the chunk is.
+        """
+        # The auth middleware only sees HTTP requests, so a WebSocket checks the session itself, and must
+        # come from this site (a browser sends cookies on cross-site WebSockets too).
+        https = ws.url.scheme in ("wss", "https")
+        origin, host = ws.headers.get("origin", ""), ws.headers.get("host", "")
+        token = ws.cookies.get(auth.cookie_name(https))
+        if not origin or urlsplit(origin).netloc.lower() != host.lower() or not auth_store.session(token):
+            await ws.close(code=1008)
+            return
+        await ws.accept()
+        loop = asyncio.get_running_loop()
+        send_lock = asyncio.Lock()
+        tasks: dict[str, asyncio.Task] = {}
+
+        async def send(kind: str, payload) -> None:
+            async with send_lock:
+                await (ws.send_bytes(payload) if kind == "b" else ws.send_json(payload))
+
+        async def stream(cam_id: str) -> None:
+            from .recorder import LiveMP4
+            c = hub.cams.get(cam_id)
+            tag = cam_id.encode()[:255]
+            while c is not None:
+                if c.template_stream is None or c.status.get("main") != "live":
+                    await asyncio.sleep(2)
+                    continue
+                if live_streams["n"] >= LIVE_MAX_STREAMS:
+                    await send("j", {"cam": cam_id, "end": True, "why": "busy"})
+                    return
+                live_streams["n"] += 1
+                ls = None
+                try:
+                    ls = await loop.run_in_executor(LIVE_POOL, LiveMP4, c, False)
+                    await send("j", {"cam": cam_id, "mime": ls.mime})
+                    while True:
+                        chunk = await loop.run_in_executor(LIVE_POOL, ls.read, 0.5)
+                        if chunk is None:
+                            break
+                        if chunk:
+                            age = time.time() - ls.newest_wall + c.lag["main"].last if ls.newest_wall else 0.0
+                            await send("b", struct.pack(f">B{len(tag)}sd", len(tag), tag, age) + chunk)
+                    await send("j", {"cam": cam_id, "end": True})
+                except (WebSocketDisconnect, RuntimeError):
+                    return
+                finally:
+                    live_streams["n"] -= 1
+                    if ls is not None:
+                        await loop.run_in_executor(LIVE_POOL, ls.close)
+                await asyncio.sleep(1)          # stream ended (camera reconnected, viewer too slow): restart
+
+        def want(ids) -> None:
+            ids = {i for i in ids if isinstance(i, str) and i in hub.cams}
+            for cid in list(tasks):
+                if cid not in ids:
+                    tasks.pop(cid).cancel()
+            for cid in ids - tasks.keys():
+                tasks[cid] = asyncio.create_task(stream(cid))
+
+        async def watch_session() -> None:     # signing out (or the session expiring) ends the stream
+            while True:
+                await asyncio.sleep(LIVE_SESSION_CHECK_S)
+                if not await asyncio.to_thread(auth_store.session, token):
+                    await ws.close(code=1008)
+                    return
+
+        watcher = asyncio.create_task(watch_session())
+        try:
+            while True:
+                msg = await ws.receive_json()
+                if not isinstance(msg, dict):
+                    continue
+                if isinstance(msg.get("cams"), list):
+                    want(msg["cams"][:64])
+                if "ping" in msg:
+                    await send("j", {"pong": msg["ping"]})
+        except (WebSocketDisconnect, RuntimeError, ValueError):
+            pass
+        finally:
+            watcher.cancel()
+            for t in tasks.values():
+                t.cancel()
 
     @app.get("/api/cameras/{cam_id}/live.mjpg")
     async def live(cam_id: str):
@@ -455,7 +557,7 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         return FileResponse(p, media_type=mt)
 
     configapi.register(app, hub, searcher, config_path)
-    auth.register(app, auth.AuthStore(config_path.parent / "auth.json", db), WEB)
+    auth.register(app, auth_store, WEB)
     class NoCacheStatic(StaticFiles):
         """UI files change with every update; make browsers revalidate (cheap 304 via ETag) instead of
         heuristically caching an old app.js next to a new index.html."""

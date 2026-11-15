@@ -24,6 +24,8 @@ button.primary, form button[type=submit] { background: var(--accent); border-col
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 12px; }
 .tile { background: #000; border-radius: 8px; overflow: hidden; position: relative; border: 1px solid var(--line); }
 .tile img { width: 100%; display: block; aspect-ratio: 16/9; object-fit: contain; }
+.tile video { width: 100%; display: none; aspect-ratio: 16/9; object-fit: contain; background: #000; }
+.tile.vid video { display: block; } .tile.vid img { display: none; }
 .tile canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .tile .bar { padding: 6px 10px; background: var(--panel); font-size: 12px; display: grid; gap: 4px; }
 /* Two fixed rows that never wrap, so tiles keep the same height whatever the numbers say. */

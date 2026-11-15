@@ -318,6 +318,7 @@ class _Lag:
             self._base: Optional[float] = None
             self._media: Optional[float] = None
             self._off = 0.0
+            self.last = 0.0                 # lag of the most recent packet
 
     def push(self, pts, time_base, now: float) -> float:
         """Record a packet/frame; returns its lag in seconds."""
@@ -338,7 +339,7 @@ class _Lag:
                 self._mins.popleft()
             self._base = min(m for _, m in self._mins)
             self._media, self._off = media, off
-            lag = off - self._base
+            lag = self.last = off - self._base
             self._peaks.append((now, lag))
             while self._peaks[0][0] < now - self.PEAK_S:
                 self._peaks.popleft()
