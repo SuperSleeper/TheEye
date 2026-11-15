@@ -35,6 +35,7 @@ def main() -> None:
     cfg_path = Path(args.config).resolve()
     if not cfg_path.exists():
         logging.warning("%s not found — starting empty; open the Setup tab to configure", cfg_path)
+    hub.log_path = cfg_path.parent / "theeye.log"    # where run.sh / the service append the log
     app = create_app(hub, searcher, cfg_path)
     srv = cfg.server
     tls = {}

@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from . import auth, configapi
 from .db import jload
-from .hub import Hub
+from .hub import LOG_MAX_BYTES, MOTION_KEEP_DAYS, SOUND_KEEP_DAYS, Hub
 from .search import Searcher
 
 
@@ -35,7 +35,7 @@ def _du(root: Path) -> tuple[int, int, Optional[float]]:
     return size, n, oldest
 
 
-def _storage_scan(data: Path, hub: Hub) -> dict:
+def _storage_scan(data: Path, hub: Hub, install: Path) -> dict:
     import shutil
     names = {c.id: c.name or c.id for c in hub.cfg.cameras}
     ids = set(names)
@@ -45,19 +45,32 @@ def _storage_scan(data: Path, hub: Hub) -> dict:
     cams = []
     for cid in ids:
         clips, nclips, oldest = _du(data / "clips" / cid)
-        snaps, nsnaps, _ = _du(data / "snaps" / cid)
+        snaps, nsnaps, oldest_snap = _du(data / "snaps" / cid)
         cam = hub.cams.get(cid)
         cams.append({"id": cid, "name": names.get(cid, cid), "configured": cid in names,
                      "clips_bytes": clips, "clips": nclips, "oldest_clip": oldest,
-                     "snaps_bytes": snaps, "snaps": nsnaps, "total_bytes": clips + snaps,
+                     "snaps_bytes": snaps, "snaps": nsnaps, "oldest_snap": oldest_snap, "total_bytes": clips + snaps,
                      "ram_bytes": cam.ring.stats["bytes"] if cam else 0})
     cams.sort(key=lambda r: -r["total_bytes"])
     db_bytes = sum(p.stat().st_size for p in data.glob("theeye.db*") if p.is_file())
     files = sum(r["total_bytes"] for r in cams)
     other = sum(p.stat().st_size for p in data.iterdir() if p.is_file() and not p.name.startswith("theeye.db"))
     disk = shutil.disk_usage(data)
+    logs = [p for p in install.glob("*.log*") if p.is_file()]
+    oldest = lambda k: min((r[k] for r in cams if r[k]), default=None)        # noqa: E731
+    count = lambda sql: hub.db.one(sql)["n"]                                   # noqa: E731
     return {"time": time.time(), "path": str(data), "cameras": cams, "database_bytes": db_bytes,
             "other_bytes": other, "clips_bytes": sum(r["clips_bytes"] for r in cams),
+            "clips": sum(r["clips"] for r in cams), "oldest_clip": oldest("oldest_clip"),
+            "snaps_bytes": sum(r["snaps_bytes"] for r in cams), "snaps": sum(r["snaps"] for r in cams),
+            "oldest_snap": oldest("oldest_snap"),
+            "rows": {"events": count("SELECT COUNT(*) AS n FROM events"),
+                     "detections": count("SELECT COUNT(*) AS n FROM detections"),
+                     "searchable": count("SELECT COUNT(*) AS n FROM detections WHERE embedding IS NOT NULL")},
+            "logs_bytes": sum(p.stat().st_size for p in logs), "logs": len(logs),
+            "log_limit_bytes": LOG_MAX_BYTES,
+            "ram_bytes": sum(r["ram_bytes"] for r in cams), "ram_budget_bytes": hub.cfg.storage.ram_budget_gb * 1e9,
+            "keep_days": {"motion": MOTION_KEEP_DAYS, "sound": SOUND_KEEP_DAYS},
             "total_bytes": files + db_bytes + other, "clip_limit_bytes": hub.cfg.storage.max_gb * 1e9,
             "disk_total": disk.total, "disk_free": disk.free}
 
@@ -426,7 +439,7 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         """Disk used per camera (clips, snapshots) and in total. Walking the folders takes a moment, so cached 60 s."""
         c = _storage_cache.get("v")
         if refresh or not c or time.time() - c["time"] > 60:
-            c = _storage_cache["v"] = await asyncio.to_thread(_storage_scan, data, hub)
+            c = _storage_cache["v"] = await asyncio.to_thread(_storage_scan, data, hub, config_path.parent)
         return c
 
     @app.get("/api/stats")

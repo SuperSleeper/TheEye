@@ -1181,10 +1181,9 @@ async function loadStorage(refresh = false) {
   const max = Math.max(1, ...r.cameras.map(c => c.total_bytes));
   const days = t => t ? `${Math.max(0, (Date.now() / 1000 - t) / 86400).toFixed(1)} days` : '—';
   const lim = r.clip_limit_bytes, used = r.clips_bytes;
+  const n = v => Number(v).toLocaleString();
   box.innerHTML = `
-    <div class="rambar" title="Clips vs the clip limit"><span style="width:${Math.min(100, used / lim * 100).toFixed(1)}%;background:${used > lim * 0.9 ? '#ffd60a' : 'var(--accent)'}"></span></div>
-    <div class="small">Clips use <b>${fmtBytes(used)}</b> of the ${fmtBytes(lim)} limit${used > lim * 0.9 ? ' <span class="warn">— nearly full: oldest clips are being deleted</span>' : ''}
-      · everything in the data folder <b>${fmtBytes(r.total_bytes)}</b> · disk free ${fmtBytes(r.disk_free)} of ${fmtBytes(r.disk_total)}</div>
+    <div class="sub-h">Per camera</div>
     <div class="tscroll"><table class="table stor">
       <thead><tr><th>Camera</th><th class="num">Clips</th><th class="num">Snapshots</th><th class="num">Total</th><th></th><th class="num">Oldest clip</th><th class="num">RAM loop now</th></tr></thead>
       <tbody>${r.cameras.map(c => `<tr>
@@ -1200,8 +1199,30 @@ async function loadStorage(refresh = false) {
       <tfoot><tr><th>Total</th><th class="num">${fmtBytes(r.clips_bytes)}</th><th class="num">${fmtBytes(r.cameras.reduce((a, c) => a + c.snaps_bytes, 0))}</th>
         <th class="num">${fmtBytes(r.total_bytes)}</th><th></th><th></th><th class="num">${fmtBytes(r.cameras.reduce((a, c) => a + c.ram_bytes, 0))}</th></tr></tfoot>
     </table></div>
+    <div class="rambar" style="margin-top:14px" title="Clips vs the clip limit"><span style="width:${Math.min(100, used / lim * 100).toFixed(1)}%;background:${used > lim * 0.9 ? '#ffd60a' : 'var(--accent)'}"></span></div>
+    <div class="small">Clips use <b>${fmtBytes(used)}</b> of the ${fmtBytes(lim)} limit${used > lim * 0.9 ? ' <span class="warn">— nearly full: oldest clips are being deleted</span>' : ''}
+      · everything in the data folder <b>${fmtBytes(r.total_bytes)}</b> · disk free ${fmtBytes(r.disk_free)} of ${fmtBytes(r.disk_total)}</div>
+    <div class="sub-h">What grows, and what keeps it in check</div>
+    <div class="tscroll"><table class="table grows">
+      <thead><tr><th>Data</th><th class="num">Size</th><th>Kept</th></tr></thead>
+      <tbody>
+        <tr><td>Video clips</td><td class="num">${fmtBytes(r.clips_bytes)} <span class="muted">· ${n(r.clips)}</span></td>
+          <td>Oldest deleted above the ${fmtBytes(lim)} limit${r.oldest_clip ? ` · now go back ${days(r.oldest_clip)}` : ''}</td></tr>
+        <tr><td>Snapshots</td><td class="num">${fmtBytes(r.snaps_bytes)} <span class="muted">· ${n(r.snaps)}</span></td>
+          <td>As far back as the clips; older ones are deleted with them (each vehicle keeps its picture)${r.oldest_snap ? ` · now go back ${days(r.oldest_snap)}` : ''}</td></tr>
+        <tr><td>Database</td><td class="num">${fmtBytes(r.database_bytes)}</td>
+          <td>${n(r.rows.events)} events and ${n(r.rows.detections)} detections (${n(r.rows.searchable)} searchable by look).
+            Past the clips: search data and bare detections removed, event, plate and vehicle history kept ·
+            motion log ${r.keep_days.motion} days · sound levels ${r.keep_days.sound} days</td></tr>
+        <tr><td>Log files</td><td class="num">${fmtBytes(r.logs_bytes)} <span class="muted">· ${r.logs}</span></td>
+          <td>Rotated at ${fmtBytes(r.log_limit_bytes)}, one previous file kept</td></tr>
+        ${r.other_bytes >= 1e6 ? `<tr><td>Other files</td><td class="num">${fmtBytes(r.other_bytes)}</td><td class="muted">In the data folder; not managed</td></tr>` : ''}
+        <tr><td>RAM loops (memory)</td><td class="num">${fmtBytes(r.ram_bytes)}</td>
+          <td>Fixed: capped by the ${fmtBytes(r.ram_budget_bytes)} RAM budget; nothing is written to disk until an event</td></tr>
+      </tbody>
+    </table></div>
     <p class="small muted">Measured ${fmtTime(r.time)} in <code>${esc(r.path)}</code>. "Oldest clip" is how far back recordings go for that camera.
-      Snapshots aren't counted toward the clip limit.</p>`;
+      Snapshots don't count toward the clip limit, but are cleaned up along with the clips. Cleanup runs every 5 minutes.</p>`;
 }
 $('#cfg-storage-refresh').onclick = () => loadStorage(true);
 

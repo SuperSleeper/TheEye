@@ -55,6 +55,7 @@ class Hub:
         self.cfg = cfg
         self.data = cfg.data_dir
         self.db = DB(self.data / "theeye.db")
+        self.log_path: Optional[Path] = None      # set by __main__ when a log file sits next to the config
         n = max(1, len([c for c in cfg.cameras if c.enabled]))
         per_cam = int(cfg.storage.ram_budget_gb * 1e9 / n)
         self.cams: dict[str, Camera] = {c.id: Camera(c, per_cam) for c in cfg.cameras if c.enabled}
@@ -468,31 +469,99 @@ class Hub:
         threading.Thread(target=send, daemon=True).start()
 
     def _retention(self) -> None:
-        clip_root = self.data / "clips"
         while not self._stop.wait(300):
-            try:
-                limit = self.cfg.storage.max_gb * 1e9
-                files = sorted((p for p in clip_root.rglob("*.mp4")), key=lambda p: p.stat().st_mtime)
-                total = sum(p.stat().st_size for p in files)
-                active = {w["path"] for w in self.rec.active().values()}
-                for p in files:
-                    if total <= limit:
-                        break
-                    rel = str(p.relative_to(self.data))
-                    if rel in active:
-                        continue
-                    total -= p.stat().st_size
-                    p.unlink(missing_ok=True)
-                    self.db.execute("UPDATE events SET clip_path=NULL WHERE clip_path=?", (rel,))
-                    log.info("retention: deleted %s", rel)
-                cutoff = time.time() - 30 * 86400
-                self.db.execute("DELETE FROM motion_triggers WHERE start_ts < ?", (cutoff,))
-                self.db.execute("DELETE FROM sound_levels WHERE ts < ?", (time.time() - 7 * 86400,))
-                free = shutil.disk_usage(self.data).free
-                if free < 5e9:
-                    log.warning("low disk space: %.1f GB free", free / 1e9)
-            except Exception:  # noqa: BLE001
-                log.exception("retention pass failed")
+            for step in (self._prune_clips, self._prune_snapshots, self._prune_history, self._rotate_log):
+                try:
+                    step()
+                except Exception:  # noqa: BLE001
+                    log.exception("retention: %s failed", step.__name__)
+            free = shutil.disk_usage(self.data).free
+            if free < 5e9:
+                log.warning("low disk space: %.1f GB free", free / 1e9)
+
+    def _prune_clips(self) -> None:
+        """Delete the oldest clips (all cameras together) until clips fit in storage.max_gb."""
+        limit = self.cfg.storage.max_gb * 1e9
+        files = sorted((p for p in (self.data / "clips").rglob("*.mp4")), key=lambda p: p.stat().st_mtime)
+        total = sum(p.stat().st_size for p in files)
+        active = {w["path"] for w in self.rec.active().values()}
+        for p in files:
+            if total <= limit:
+                break
+            rel = str(p.relative_to(self.data))
+            if rel in active:
+                continue
+            total -= p.stat().st_size
+            p.unlink(missing_ok=True)
+            self.db.execute("UPDATE events SET clip_path=NULL WHERE clip_path=?", (rel,))
+            log.info("retention: deleted %s", rel)
+
+    def _prune_snapshots(self) -> None:
+        """Keep pictures only as far back as video goes (the oldest event that still has its clip).
+
+        Older than that: event thumbnails and detection snapshots are deleted, and so is the detections'
+        CLIP search data. Detection rows that carry nothing else (no event, plate or vehicle) are deleted;
+        events, plate reads and vehicle sightings stay as text history. A vehicle's own picture is kept.
+        """
+        row = self.db.one("SELECT MIN(start_ts) AS t FROM events WHERE clip_path IS NOT NULL")
+        horizon = row["t"] if row else None
+        if not horizon:                       # nothing recorded yet: no reference point
+            return
+        keep = {r["snapshot_path"] for r in self.db.all("SELECT snapshot_path FROM vehicles WHERE snapshot_path IS NOT NULL")}
+        files: list[str] = []
+        n_ev = n_strip = n_del = 0
+        for _ in range(50):                   # batches, so the database isn't locked for long
+            evs = self.db.all("SELECT id, snapshot_path FROM events WHERE clip_path IS NULL AND start_ts < ?"
+                              " AND snapshot_path IS NOT NULL LIMIT ?", (horizon, PRUNE_BATCH))
+            if evs:
+                files += [e["snapshot_path"] for e in evs]
+                self.db.execute(f"UPDATE events SET snapshot_path=NULL WHERE id IN ({_ids(evs)})")
+                n_ev += len(evs)
+            dets = self.db.all(
+                "SELECT d.id, d.snapshot_path, (d.plate IS NULL AND d.vehicle_id IS NULL AND e.id IS NULL) AS bare"
+                " FROM detections d LEFT JOIN events e ON e.id = d.event_id"
+                " WHERE d.last_ts < ? AND (e.id IS NULL OR e.clip_path IS NULL)"
+                " AND (d.snapshot_path IS NOT NULL OR d.embedding IS NOT NULL"
+                "      OR (d.plate IS NULL AND d.vehicle_id IS NULL AND e.id IS NULL)) LIMIT ?", (horizon, PRUNE_BATCH))
+            if dets:
+                files += [d["snapshot_path"] for d in dets if d["snapshot_path"]]
+                bare = [d for d in dets if d["bare"]]
+                rest = [d for d in dets if not d["bare"]]
+                if bare:
+                    self.db.execute(f"DELETE FROM event_links WHERE kind='detection' AND ref_id IN ({_ids(bare)})")
+                    self.db.execute(f"DELETE FROM detections WHERE id IN ({_ids(bare)})")
+                if rest:
+                    self.db.execute(f"UPDATE detections SET snapshot_path=NULL, embedding=NULL WHERE id IN ({_ids(rest)})")
+                n_del, n_strip = n_del + len(bare), n_strip + len(rest)
+            if len(evs) < PRUNE_BATCH and len(dets) < PRUNE_BATCH:
+                break
+        for rel in set(files) - keep:
+            (self.data / rel).unlink(missing_ok=True)
+        if n_ev or n_strip or n_del:
+            log.info("retention: removed pictures older than %s: %d event thumbnails, %d detections trimmed,"
+                     " %d detections deleted", time.strftime("%Y-%m-%d %H:%M", time.localtime(horizon)),
+                     n_ev, n_strip, n_del)
+        for day in (self.data / "snaps").glob("*/*"):    # drop emptied day folders
+            if day.is_dir() and not any(day.iterdir()):
+                day.rmdir()
+
+    def _prune_history(self) -> None:
+        self.db.execute("DELETE FROM motion_triggers WHERE start_ts < ?", (time.time() - MOTION_KEEP_DAYS * 86400,))
+        self.db.execute("DELETE FROM event_links WHERE kind='motion' AND ref_id NOT IN (SELECT id FROM motion_triggers)")
+        self.db.execute("DELETE FROM sound_levels WHERE ts < ?", (time.time() - SOUND_KEEP_DAYS * 86400,))
+
+    def _rotate_log(self) -> None:
+        """Keep the log file (written by run.sh / the service) under LOG_MAX_BYTES, plus one previous file.
+
+        Copy-then-truncate, because the writer holds the file open in append mode and keeps writing to it.
+        """
+        p = self.log_path
+        if not p or not p.is_file() or p.stat().st_size < LOG_MAX_BYTES:
+            return
+        shutil.copyfile(p, p.with_name(p.name + ".1"))
+        with open(p, "r+b") as f:
+            f.truncate(0)
+        log.info("log rotated; the previous part is in %s.1", p.name)
 
     def stats(self) -> dict:
         ram = sum(c.ring.stats["bytes"] for c in self.cams.values())
@@ -504,6 +573,13 @@ class Hub:
 
 
 TRACK_GRACE = 3.0
+PRUNE_BATCH = 2000
+MOTION_KEEP_DAYS, SOUND_KEEP_DAYS = 30, 7
+LOG_MAX_BYTES = 20_000_000
+
+
+def _ids(rows: list[dict]) -> str:
+    return ",".join(str(int(r["id"])) for r in rows)
 LIVE_CAM_KEYS = {"sound_detect", "sound_threshold_db", "sound_min_seconds"}   # change without reconnecting
 
 
