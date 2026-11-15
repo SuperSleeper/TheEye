@@ -497,8 +497,11 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
             if r.get("kind") == "detection" and r.get("event_id"):
                 eid = r["event_id"]
                 if eid not in ev_cache:
-                    ev_cache[eid] = db.one("SELECT id,clip_path,clip_offset,start_ts FROM events WHERE id=?", (eid,))
+                    ev_cache[eid] = db.one("SELECT id,clip_path,clip_offset,start_ts,snapshot_path FROM events WHERE id=?",
+                                           (eid,))
                 e = ev_cache[eid]
+                if e and not r.get("snapshot_path"):     # track cut short (e.g. a restart): use the recording's picture
+                    r["snapshot_path"] = e["snapshot_path"]
                 if e and e["clip_path"]:
                     r["clip_path"] = e["clip_path"]
                     r["seek"] = max(0.0, e["clip_offset"] + r["first_ts"] - e["start_ts"])

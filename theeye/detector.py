@@ -50,6 +50,7 @@ class Track:
     best_frame: Optional[np.ndarray] = None
     best_ts: float = 0.0                  # when best_frame was seen (for full-res re-decode from the RAM loop)
     snapshot_dirty: bool = False
+    snapshot_saved: float = 0.0          # when a snapshot of this track was last written
     plate: Optional[str] = None
     plate_conf: float = 0.0
     last_plate_try: float = 0.0

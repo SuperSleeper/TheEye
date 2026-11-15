@@ -292,7 +292,7 @@ class Searcher:
         return [z["id"] for z in self.db.all("SELECT id, name FROM zones") if z["name"].lower() in names]
 
     def _detections(self, f: dict) -> list[dict]:
-        where, args = ["1=1"], []
+        where, args = ["(snapshot_path IS NOT NULL OR event_id IS NOT NULL)"], []   # else nothing to show
         self._cam_clause(f, where, args)
         self._time_clauses(f, "first_ts", where, args)
         labels = [l for l in (f.get("labels") or []) if l]

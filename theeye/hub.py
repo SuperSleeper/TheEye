@@ -98,6 +98,7 @@ class Hub:
         if self.detector:
             self.detector.start()
             threading.Thread(target=self._detector_guard, name="detector-guard", daemon=True).start()
+            threading.Thread(target=self._interim_snapshots, name="interim-snapshots", daemon=True).start()
         threading.Thread(target=self._ticker, name="hub-tick", daemon=True).start()
         if not self.db.one("SELECT 1 FROM vehicles LIMIT 1"):     # first run with vehicle tracking: seed from history
             threading.Thread(target=lambda: log.info("vehicles: seeded from %d past sightings", self.vehicles.backfill()),
@@ -536,6 +537,24 @@ class Hub:
                 log.warning("webhook %s failed: %s", url, e)
         threading.Thread(target=send, daemon=True).start()
 
+    def _interim_snapshots(self) -> None:
+        """Snapshots used to be written only when a track ended, so a parked car tracked for hours showed as a
+        blank card in Search and Events. Write one for every live track whose best picture improved, at most
+        once a minute each."""
+        while not self._stop.wait(SNAPSHOT_EVERY_S):
+            now = time.time()
+            for cam in list(self.cams):
+                for t in self.detector.active_tracks(cam, within=TRACK_GRACE):
+                    if t.db_id is None or not t.snapshot_dirty or now - t.snapshot_saved < 60:
+                        continue
+                    try:
+                        snap = self.detector.save_snapshot(t)
+                        if snap:
+                            t.snapshot_saved = now
+                            self.db.execute("UPDATE detections SET snapshot_path=? WHERE id=?", (snap, t.db_id))
+                    except Exception:  # noqa: BLE001
+                        log.exception("[%s] interim snapshot failed", cam)
+
     def _detector_guard(self) -> None:
         """If detection hangs or dies, restart the whole process (systemd's Restart=always brings it back).
 
@@ -664,6 +683,7 @@ class Hub:
 
 TRACK_GRACE = 3.0
 PRUNE_BATCH = 2000
+SNAPSHOT_EVERY_S = 15
 DETECT_STALL_S = 90           # one detection batch normally takes well under a second
 MOTION_KEEP_DAYS, SOUND_KEEP_DAYS = 30, 7
 LOG_MAX_BYTES = 20_000_000
