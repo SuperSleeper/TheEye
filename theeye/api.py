@@ -488,8 +488,9 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
 
     # -------------------------------------------------------------- search
     @app.post("/api/search")
-    async def search(q: str = Body(..., embed=True)):
-        res = await asyncio.to_thread(searcher.search, q)
+    async def search(q: str = Body(..., embed=True), cameras: Optional[list[str]] = Body(None, embed=True)):
+        """cameras: the cameras ticked in the search bar; omitted = all."""
+        res = await asyncio.to_thread(searcher.search, q, cameras)
         ev_cache: dict[int, Optional[dict]] = {}
         for r in res["results"]:
             if r.get("kind") == "detection" and r.get("event_id"):

@@ -32,7 +32,7 @@ function showTab(name) {
   for (const k in timers) delete timers[k];
   if (name !== 'live') { $('#live-grid').innerHTML = ''; closeFocus?.(); }
   queueMicrotask(() => lvUpdate());
-  ({ live: initLive, events: loadEvents, triggers: loadTriggers, zones: initZones, rules: initRules, setup: () => initSetup(), search: () => $('#search-q').focus(), vehicles: loadVehicles })[name]?.();
+  ({ live: initLive, events: loadEvents, triggers: loadTriggers, zones: initZones, rules: initRules, setup: () => initSetup(), search: () => { renderSearchCams(); $('#search-q').focus(); }, vehicles: loadVehicles })[name]?.();
   location.hash = name;
   $('#overlay-toggles').hidden = name !== 'live';       // overlays only exist on Live
 }
@@ -699,20 +699,51 @@ api('/api/vehicles?status=flagged&limit=1').then(r => updateVehicleBadge(r.count
 // Every kind of object found in a recording, with its best certainty; the one that matched is highlighted.
 const tagChips = (tags, hit) => (tags || []).map(t =>
   `<span class="chip${t.label === hit ? ' hit' : ''}">${esc(t.label)} ${Math.round(t.conf * 100)}%</span>`).join('');
+// Camera filter for searches. Stores the cameras NOT ticked, so a newly added camera is searched by default.
+const SC_KEY = 'theeye.searchCamsOff';
+const scOff = () => { try { return new Set(JSON.parse(localStorage.getItem(SC_KEY) || '[]')); } catch { return new Set(); } };
+function renderSearchCams() {
+  const off = scOff(), box = $('#search-cams');
+  box.innerHTML = cameras.length ? `<label class="all"><input type="checkbox" data-all> All cameras</label>` + cameras.map(c =>
+    `<label><input type="checkbox" value="${esc(c.id)}"${off.has(c.id) ? '' : ' checked'}> ${esc(c.name || c.id)}</label>`).join('') : '';
+  syncSearchAll();
+}
+function syncSearchAll() {
+  const boxes = $$('#search-cams input:not([data-all])'), all = $('#search-cams input[data-all]');
+  if (!all) return;
+  const n = boxes.filter(b => b.checked).length;
+  all.checked = n === boxes.length; all.indeterminate = n > 0 && n < boxes.length;
+}
+$('#search-cams').onchange = e => {
+  const boxes = $$('#search-cams input:not([data-all])');
+  if (e.target.matches('[data-all]')) boxes.forEach(b => { b.checked = e.target.checked; });
+  syncSearchAll();
+  try { localStorage.setItem(SC_KEY, JSON.stringify(boxes.filter(b => !b.checked).map(b => b.value))); } catch { /* not kept */ }
+  if ($('#search-q').value.trim()) $('#search-form').requestSubmit();     // re-run with the new cameras
+};
+function searchCams() {                  // null = all cameras (also covers cameras added since the page loaded)
+  const boxes = $$('#search-cams input:not([data-all])');
+  return boxes.every(b => b.checked) ? null : boxes.filter(b => b.checked).map(b => b.value);
+}
+
 $('#search-form').onsubmit = async ev => {
   ev.preventDefault();
   const q = $('#search-q').value.trim(); if (!q) return;
   $('#search-meta').textContent = 'Thinking…'; $('#search-results').innerHTML = '';
   try {
-    const r = await api('/api/search', { method: 'POST', body: { q } });
+    const cams = searchCams();
+    const r = await api('/api/search', { method: 'POST', body: cams ? { q, cameras: cams } : { q } });
     const f = r.filter;
     const parts = [];
-    if (f.cameras?.length) parts.push(`cameras=${f.cameras.join(',')}`);
+    if (f.time_label) parts.push(`🕑 ${f.time_label}`);
+    if (f.cameras?.length) parts.push(`cameras=${f.cameras.map(camName).join(', ')}`);
     if (f.labels?.length) parts.push(`labels=${f.labels.join(',')}`);
     if (f.plate) parts.push(`plate=${f.plate}`);
     if (f.zones?.length) parts.push(`zones=${f.zones.join(',')}`);
-    if (f.start) parts.push(`from ${f.start}`); if (f.end) parts.push(`to ${f.end}`);
-    if (f.hours?.length) parts.push(`hours=${f.hours.join(',')}`);
+    if (!f.time_label) {
+      if (f.start) parts.push(`from ${f.start}`); if (f.end) parts.push(`to ${f.end}`);
+      if (f.hours?.length) parts.push(`hours=${f.hours.join(',')}`);
+    }
     if (f.min_confidence) parts.push(`certainty ≥ ${Math.round(f.min_confidence * 100)}%`);
     if (f.visual) parts.push(`looks like “${f.visual}”`);
     $('#search-meta').innerHTML = `${esc(f.explanation || '')} — <code>${esc(r.target)}: ${esc(parts.join(' · ') || 'everything')}</code> · ${r.results.length} results · ${r.ms} ms`;

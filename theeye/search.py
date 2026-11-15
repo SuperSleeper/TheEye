@@ -16,6 +16,7 @@ from typing import Any, Optional
 import httpx
 import numpy as np
 
+from . import timeparse
 from .config import LLMConfig
 from .db import DB, jload
 
@@ -27,6 +28,27 @@ TIME_WORDS = re.compile(
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|am|pm|\d{1,2}:\d{2}|\d{1,2}\s?(am|pm))\b")
 
 COCO_HINT = ["person", "bicycle", "car", "motorcycle", "bus", "truck", "dog", "cat", "bird"]
+
+# Object words -> detector labels, for searches without the LLM. A query that's only these words becomes a
+# plain label filter; anything else ("red truck") also keeps a look-alike ranking.
+LABEL_WORDS = {
+    "person": ["person"], "people": ["person"], "persons": ["person"], "someone": ["person"], "somebody": ["person"],
+    "man": ["person"], "men": ["person"], "woman": ["person"], "women": ["person"], "kid": ["person"],
+    "kids": ["person"], "child": ["person"], "children": ["person"], "human": ["person"], "humans": ["person"],
+    "me": ["person"], "visitor": ["person"], "visitors": ["person"], "anyone": ["person"], "anybody": ["person"],
+    "car": ["car"], "cars": ["car"], "truck": ["truck"], "trucks": ["truck"], "pickup": ["truck", "car"],
+    "van": ["truck", "car"], "vans": ["truck", "car"], "suv": ["car", "truck"], "suvs": ["car", "truck"],
+    "vehicle": ["car", "truck", "bus", "motorcycle"], "vehicles": ["car", "truck", "bus", "motorcycle"],
+    "bus": ["bus"], "buses": ["bus"], "motorcycle": ["motorcycle"], "motorcycles": ["motorcycle"],
+    "motorbike": ["motorcycle"], "bike": ["bicycle", "motorcycle"], "bikes": ["bicycle", "motorcycle"],
+    "bicycle": ["bicycle"], "bicycles": ["bicycle"], "dog": ["dog"], "dogs": ["dog"], "cat": ["cat"],
+    "cats": ["cat"], "bird": ["bird"], "birds": ["bird"], "animal": ["dog", "cat", "bird"],
+    "animals": ["dog", "cat", "bird"],
+}
+STOP = {"a", "an", "the", "any", "some", "of", "in", "on", "at", "by", "near", "with", "from", "to", "and", "or",
+        "was", "were", "is", "are", "who", "that", "there", "show", "me", "find", "all", "seen", "came",
+        "going", "coming", "walking", "driving", "leaving", "arriving", "out", "my", "our", "few", "couple",
+        "event", "events", "recording", "recordings", "clip", "clips"}
 
 FILTER_SCHEMA = {
     "type": "object",
@@ -132,7 +154,7 @@ class Searcher:
                             cameras=", ".join(f"{k} = {v}" for k, v in self.cameras.items()) or "none",
                             zones=", ".join(zones) or "none")
         if not self.cfg.enabled:
-            return self._fallback(q, "LLM disabled")
+            return self._fallback(q, "Read without the LLM (it is turned off in Setup)")
         try:
             r = httpx.post(f"{self.cfg.url}/api/chat", timeout=60, json={
                 "model": self.cfg.model, "stream": False, "keep_alive": self.cfg.keep_alive,
@@ -145,7 +167,7 @@ class Searcher:
             return self._ground(q, f)
         except Exception as e:  # noqa: BLE001
             log.warning("LLM interpret failed: %s", e)
-            return self._fallback(q, f"LLM unavailable ({e.__class__.__name__}); visual search only")
+            return self._fallback(q, f"LLM unavailable ({e.__class__.__name__}); read without it")
 
     def _ground(self, q: str, f: dict) -> dict:
         """Small models tend to invent camera/zone filters. Keep only ones the question mentions."""
@@ -162,24 +184,60 @@ class Searcher:
         f["cameras"] = [c for c in (f.get("cameras") or [])
                         if c and c.lower() in lookup and mentioned(lookup[c.lower()], self.cameras[lookup[c.lower()]])]
         f["zones"] = [z for z in (f.get("zones") or []) if mentioned(z)]
-        if not TIME_WORDS.search(ql):
+        tr = timeparse.parse(q)
+        if tr.found:                       # plain-code reading of the time beats a small model's
+            _set_time(f, tr)
+        elif not TIME_WORDS.search(ql):
             f["start"], f["end"], f["hours"] = "", "", []
         return _apply_certainty(q, f)
 
-    @staticmethod
-    def _fallback(q: str, why: str) -> dict:
+    def _named_cameras(self, text: str) -> tuple[list[str], str]:
+        """Cameras whose name appears in the text (e.g. "driveway" -> Driveway), and the text without it."""
+        found, low = [], " " + text.lower() + " "
+        for cid, name in sorted(self.cameras.items(), key=lambda kv: -len(kv[1] or "")):
+            for n in {(name or "").lower(), cid.lower(), cid.lower().replace("_", " ")}:
+                if n and re.search(rf"\b{re.escape(n)}\b", low):
+                    found.append(cid)
+                    low = re.sub(rf"\b{re.escape(n)}\b", " ", low)
+                    break
+        return found, " ".join(low.split())
+
+    def _fallback(self, q: str, why: str) -> dict:
+        """Without the LLM: time words, camera names, object words and certainty are read in plain code;
+        whatever is left ("red", "with a dog") ranks results by look."""
         f = {"target": "detections", "cameras": [], "labels": [], "plate": "", "zones": [], "start": "",
-             "end": "", "hours": [], "min_confidence": 0, "visual": q, "limit": 50, "explanation": why}
+             "end": "", "hours": [], "min_confidence": 0, "visual": "", "limit": 50, "explanation": why}
         f = _apply_certainty(q, f)
-        if f["min_confidence"]:                       # don't make "over 80% certainty" part of the look-alike text
-            f["visual"] = CERTAINTY.sub(" ", q).strip()
+        text = CERTAINTY.sub(" ", q) if f["min_confidence"] else q
+        tr = timeparse.parse(text)
+        if tr.found:
+            _set_time(f, tr)
+        f["cameras"], text = self._named_cameras(tr.rest)
+        words = re.findall(r"[a-z0-9']+", text.lower())
+        labels = sorted({l for w in words for l in LABEL_WORDS.get(w, [])})
+        if any(w in ("event", "events", "recording", "recordings", "clip", "clips") for w in words):
+            f["target"] = "events"
+        f["labels"] = labels
+        extra = [w for w in words if w not in STOP and w not in LABEL_WORDS and not w.isdigit()
+                 and w not in ("event", "events", "recording", "recordings", "clip", "clips")]
+        f["visual"] = text.strip() if extra else ""
         return f
 
     # ------------------------------------------------------------ execute
-    def search(self, q: str) -> dict[str, Any]:
+    def search(self, q: str, cameras: Optional[list[str]] = None) -> dict[str, Any]:
+        """cameras: the cameras ticked in the UI (None = all). A camera named in the question narrows it further."""
         t0 = time.time()
         f = self.interpret(q)
         target = f.get("target") or "detections"
+        if cameras is not None:
+            picked = [c for c in cameras if c in self.cameras]
+            named = f.get("cameras") or []
+            f["cameras"] = [c for c in named if c in picked] if named else picked
+            if not f["cameras"]:          # nothing left to search (empty selection, or named one isn't ticked)
+                f["explanation"] = ("No cameras are ticked" if not picked else
+                                    "The camera named in the search isn't ticked")
+                return {"query": q, "filter": f, "target": target, "results": [],
+                        "ms": int((time.time() - t0) * 1000)}
         if target == "events":
             results = self._events(f)
         elif target == "motion":
@@ -322,3 +380,10 @@ class Searcher:
         for r in rows:
             r["kind"] = "motion"
         return rows
+
+
+def _set_time(f: dict, tr: "timeparse.TimeRange") -> None:
+    f["start"] = tr.start.isoformat(timespec="seconds") if tr.start else ""
+    f["end"] = tr.end.isoformat(timespec="seconds") if tr.end else ""
+    f["hours"] = tr.hours
+    f["time_label"] = tr.label
