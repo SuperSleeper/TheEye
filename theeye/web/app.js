@@ -26,7 +26,11 @@ window.addEventListener('unhandledrejection', e => console.error('Unhandled:', e
 // ---------------------------------------------------------------- tabs
 const timers = {};
 function showTab(name) {
-  $$('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  $$('#tabs button[data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  const inSettings = $(`#settings-list button[data-tab="${name}"]`);    // show which settings page is open
+  $('#settings-btn').classList.toggle('active', !!inSettings);
+  $('#settings-label').textContent = inSettings ? inSettings.textContent : 'Settings';
+  closeSettingsMenu();
   $$('.tab').forEach(s => s.classList.toggle('active', s.id === `tab-${name}`));
   Object.values(timers).forEach(clearInterval);
   for (const k in timers) delete timers[k];
@@ -36,7 +40,16 @@ function showTab(name) {
   location.hash = name;
   $('#overlay-toggles').hidden = name !== 'live';       // overlays only exist on Live
 }
-$$('#tabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+$$('#tabs button[data-tab]').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+// Settings menu: Setup, Rules, Zones, Motion log and Sign out, out of the way of the everyday tabs.
+function closeSettingsMenu() { $('#settings-list').hidden = true; $('#settings-btn').setAttribute('aria-expanded', 'false'); }
+$('#settings-btn').onclick = e => {
+  e.stopPropagation();
+  const open = $('#settings-list').hidden;
+  $('#settings-list').hidden = !open; $('#settings-btn').setAttribute('aria-expanded', String(open));
+};
+document.addEventListener('click', e => { if (!e.target.closest('.menu')) closeSettingsMenu(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSettingsMenu(); });
 
 async function boot() {
   // Endless MJPEG responses would otherwise hold the page's load event open forever.
@@ -51,10 +64,21 @@ async function boot() {
 async function loadStats() {
   try {
     const s = await api('/api/stats');
-    const rec = Object.keys(s.recording || {}).length;
-    $('#stats').textContent = `RAM loop ${(s.ram_bytes / 1e9).toFixed(2)} / ${(s.ram_budget / 1e9).toFixed(0)} GB · ` +
-      `${rec} recording · ${s.open_events} open events · ` +
-      (s.detector ? `AI ${s.detector.infer_ms} ms · ` : '') + `disk free ${(s.disk_free / 1e9).toFixed(0)} GB`;
+    const rec = Object.keys(s.recording || {}).length, gb = b => (b / 1e9).toFixed(1), g = s.gpu;
+    const chip = (text, title, cls = '') => `<span class="st${cls ? ' ' + cls : ''}" title="${esc(title)}">${text}</span>`;
+    const gpuFull = g && g.mem_used / g.mem_total > 0.92;
+    $('#stats').innerHTML = [
+      g && chip(`GPU ${g.util}% · ${gb(g.mem_used)}/${gb(g.mem_total)} GB · ${g.temp}°`,
+        `${g.name}: ${g.util}% busy, ${g.temp} °C\nMemory ${gb(g.mem_used)} of ${gb(g.mem_total)} GB` +
+        (gpuFull ? ' (nearly full: detection could fail to get memory)' : '') + '\n\n' +
+        g.procs.slice(0, 8).map(p => `${(p.mem / 1e9).toFixed(2).padStart(5)} GB  ${p.name}`).join('\n'),
+        gpuFull ? 'warn' : ''),
+      g && chip(`TheEye ${gb(g.theeye)} GB`, 'GPU memory used by TheEye (detection, visual search)'),
+      s.detector && chip(`AI ${Math.round(s.detector.infer_ms)} ms`, 'Time for one detection batch on the GPU'),
+      chip(`${rec ? '<b class="rec-dot">●</b> ' : ''}REC ${rec}`, `${rec} recording now · ${s.open_events} open events`),
+      chip(`Loop ${gb(s.ram_bytes)}/${(s.ram_budget / 1e9).toFixed(0)} GB`, 'Video kept in memory for pre-roll (RAM loop) vs its budget'),
+      chip(`Disk ${(s.disk_free / 1e9).toFixed(0)} GB free`, 'Free space where recordings are stored'),
+    ].filter(Boolean).join('');
   } catch { $('#stats').textContent = 'offline'; }
 }
 

@@ -32,6 +32,7 @@ from .motion import MotionEngine, Zone
 from .recorder import RecordingManager
 from .vehicles import VehicleRegistry
 from .rules import CamState, Rule, evaluate, is_loud
+from . import gpu
 from .plates import PlateRefiner
 from .subtypes import ANIMAL_LABELS, SubtypeClassifier
 
@@ -709,6 +710,7 @@ class Hub:
                 "recording": self.rec.active(),
                 "detector": self.detector.stats if self.detector else None,
                 "plates": self.plates.stats,
+                "gpu": gpu.stats(),
                 "open_events": len(self._open_events),
                 "disk_free": shutil.disk_usage(self.data).free}
 

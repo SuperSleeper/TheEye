@@ -14,10 +14,17 @@
     <button data-tab="events">Events</button>
     <button data-tab="search">Search</button>
     <button data-tab="vehicles">Vehicles <span id="veh-badge" class="badge err hidden"></span></button>
-    <button data-tab="triggers">Motion log</button>
-    <button data-tab="zones">Zones</button>
-    <button data-tab="rules">Rules</button>
-    <button data-tab="setup">Setup</button>
+    <div class="menu">
+      <button type="button" id="settings-btn" aria-haspopup="menu" aria-expanded="false">⚙ <span id="settings-label">Settings</span> ▾</button>
+      <div id="settings-list" class="menu-list" role="menu" hidden>
+        <button data-tab="setup" role="menuitem">Setup</button>
+        <button data-tab="rules" role="menuitem">Rules</button>
+        <button data-tab="zones" role="menuitem">Zones</button>
+        <button data-tab="triggers" role="menuitem">Motion log</button>
+        <hr>
+        <button type="button" id="logout" role="menuitem" title="Sign out of TheEye">Sign out</button>
+      </div>
+    </div>
   </nav>
   <div id="overlay-toggles" class="ov-toggles" role="group" aria-label="Live overlays">
     <button type="button" class="ov" data-ov="ai" title="Show AI detection boxes">◫ AI</button>
@@ -25,7 +32,6 @@
     <button type="button" class="ov" id="live-mode">▶ Video</button>
   </div>
   <div id="stats" class="muted"></div>
-  <button type="button" id="logout" title="Sign out of TheEye">Sign out</button>
 </header>
 
 <main>
