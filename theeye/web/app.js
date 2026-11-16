@@ -41,6 +41,15 @@ function showTab(name) {
   $('#overlay-toggles').hidden = name !== 'live';       // overlays only exist on Live
 }
 $$('#tabs button[data-tab]').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+// AI chip: click to move detection + visual search between GPU and CPU (live; saved for restarts).
+$('#stats').addEventListener('click', async e => {
+  const b = e.target.closest('#ai-dev');
+  if (!b || b.disabled) return;
+  const to = b.dataset.dev === 'cpu' ? 'cuda:0' : 'cpu';
+  b.disabled = true; b.textContent = `AI → ${to === 'cpu' ? 'CPU' : 'GPU'}…`;
+  try { await api('/api/ai-device', { method: 'POST', body: { device: to } }); } catch (err) { b.textContent = 'AI switch failed'; console.error(err); }
+  setTimeout(loadStats, 1500);
+});
 // Settings menu: Setup, Rules, Zones, Motion log and Sign out, out of the way of the everyday tabs.
 function closeSettingsMenu() { $('#settings-list').hidden = true; $('#settings-btn').setAttribute('aria-expanded', 'false'); }
 $('#settings-btn').onclick = e => {
@@ -74,7 +83,10 @@ async function loadStats() {
         g.procs.slice(0, 8).map(p => `${(p.mem / 1e9).toFixed(2).padStart(5)} GB  ${p.name}`).join('\n'),
         gpuFull ? 'warn' : ''),
       g && chip(`TheEye ${gb(g.theeye)} GB`, 'GPU memory used by TheEye (detection, visual search)'),
-      s.detector && chip(`AI ${Math.round(s.detector.infer_ms)} ms`, 'Time for one detection batch on the GPU'),
+      s.detector && `<button type="button" class="st ai-dev${s.detector.device === 'cpu' ? ' cpu' : ''}" id="ai-dev" data-dev="${esc(s.detector.device)}"
+        title="${esc(s.detector.device === 'cpu'
+          ? 'AI (detection, visual search) runs on the CPU, leaving the GPU free for other programs. Slower: cameras are checked less often.\nClick to move it back to the GPU.'
+          : 'AI (detection, visual search) runs on the GPU. Time per detection batch shown.\nClick to move it to the CPU and free most of its GPU memory (it keeps working, more slowly).')}">AI ${s.detector.device === 'cpu' ? 'CPU' : 'GPU'} ${Math.round(s.detector.infer_ms)} ms</button>`,
       chip(`${rec ? '<b class="rec-dot">●</b> ' : ''}REC ${rec}`, `${rec} recording now · ${s.open_events} open events`),
       chip(`Loop ${gb(s.ram_bytes)}/${(s.ram_budget / 1e9).toFixed(0)} GB`, 'Video kept in memory for pre-roll (RAM loop) vs its budget'),
       chip(`Disk ${(s.disk_free / 1e9).toFixed(0)} GB free`, 'Free space where recordings are stored'),

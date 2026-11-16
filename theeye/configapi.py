@@ -230,6 +230,16 @@ def register(app: FastAPI, hub, searcher, config_path: Path) -> None:
             hub.cfg = new
         return {"order": [c.id for c in cams]}
 
+    @app.post("/api/ai-device")
+    def ai_device(device: str = Body(..., embed=True)):
+        """Header toggle: run AI (detection, visual search) on the GPU or the CPU, live; saved for restarts."""
+        if device != "cpu" and not device.startswith("cuda"):
+            raise HTTPException(422, "device must be 'cpu' or 'cuda:N'")
+        hub.set_ai_device(device)
+        save_config(hub.cfg, config_path)
+        log.info("AI device set to %s from the header", device)
+        return {"device": device}
+
     @app.post("/api/config/probe")
     async def probe(camera: dict = Body(...), stream: str = Body("main"), credentials: list = Body([])):
         cams = merge_secrets([camera], current_map())

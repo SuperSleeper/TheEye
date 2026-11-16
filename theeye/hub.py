@@ -135,8 +135,10 @@ class Hub:
         """Apply a new config while running. Cameras/LLM/limits apply live; returns what needs a restart."""
         old = self.cfg
         restart = []
-        if new.detector != old.detector:
+        if new.detector.model_copy(update={"device": old.detector.device}) != old.detector:
             restart.append(self.RESTART_KEYS["detector"])
+        if new.detector.device != old.detector.device:      # GPU/CPU switches live
+            self.set_ai_device(new.detector.device)
         if new.server != old.server:
             restart.append(self.RESTART_KEYS["server"])
         if new.storage.path != old.storage.path:
@@ -586,6 +588,15 @@ class Hub:
                             self.db.execute("UPDATE detections SET snapshot_path=? WHERE id=?", (snap, t.db_id))
                     except Exception:  # noqa: BLE001
                         log.exception("[%s] interim snapshot failed", cam)
+
+    def set_ai_device(self, device: str) -> None:
+        """Run detection and visual search on "cpu" or the GPU ("cuda:0"), without restarting. On the CPU the
+        GPU memory they used is freed (except the CUDA context, ~0.3 GB, which lasts until TheEye restarts)."""
+        self.cfg.detector.device = device
+        if self.detector:
+            self.detector.set_device(device)
+        if self.embedder:
+            threading.Thread(target=self.embedder.set_device, args=(device,), name="clip-move", daemon=True).start()
 
     def _detector_guard(self) -> None:
         """If detection hangs or dies, restart the whole process (systemd's Restart=always brings it back).

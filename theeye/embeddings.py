@@ -30,6 +30,18 @@ class Embedder:
         self.device = dev
         log.info("CLIP %s loaded on %s", self.model_name, dev)
 
+    def set_device(self, device: str) -> None:
+        """Move the model between GPU and CPU while running (frees its GPU memory when moved to the CPU)."""
+        import torch
+        with self._lock:
+            dev = device if (device == "cpu" or torch.cuda.is_available()) else "cpu"
+            if self._model is not None and dev != self.device:
+                self._model.to(dev)
+                if dev == "cpu" and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            self.device = dev
+        log.info("CLIP on %s", self.device)
+
     def image(self, bgr: np.ndarray) -> Optional[np.ndarray]:
         import torch
         from PIL import Image

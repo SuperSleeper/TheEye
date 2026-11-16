@@ -128,6 +128,9 @@ class Detector:
         self.stats = {"infer_ms": 0.0, "batches": 0}
         self._thread: Optional[threading.Thread] = None
         self._busy_since: Optional[float] = None      # monotonic time the current batch started, None when idle
+        self._want_device: Optional[str] = None       # set by set_device(); applied by the detector thread
+        self._device = cfg.device                     # where the model runs now (cfg is shared with the hub,
+        self.stats["device"] = cfg.device             # which updates it before we've moved)
 
     # ------------------------------------------------------------- lifecycle
     def start(self) -> None:
@@ -139,6 +142,26 @@ class Detector:
         self._stop.set()
         with self._cv:
             self._cv.notify_all()
+
+    def set_device(self, device: str) -> None:
+        """Move detection to "cpu" or a GPU ("cuda:0") while running; takes effect before the next batch."""
+        with self._cv:
+            self._want_device = device
+            self._cv.notify()
+
+    def _apply_device(self) -> None:
+        dev, self._want_device = self._want_device, None
+        if not dev or dev == self._device:
+            return
+        from ultralytics import YOLO
+        t0 = time.time()
+        self._model = None                   # drop the GPU copy before loading a fresh one
+        _free_gpu_memory()
+        _cpu_threads(dev)
+        self._device = dev
+        self._model = YOLO(self.cfg.model)   # a fresh model sets itself up on the new device at its first predict
+        self.stats["device"] = dev
+        log.info("detection moved to %s (%.1f s)", dev, time.time() - t0)
 
     def stalled(self, limit_s: float) -> Optional[str]:
         """Why detection has stopped working, or None if it's fine. A GPU fault (e.g. NVIDIA Xid from another
@@ -198,9 +221,15 @@ class Detector:
         except Exception:  # noqa: BLE001
             log.exception("detector failed to load; detection disabled")
             return
+        _cpu_threads(self.cfg.device)
         while not self._stop.is_set():
+            if self._want_device:
+                try:
+                    self._apply_device()
+                except Exception:  # noqa: BLE001
+                    log.exception("moving detection to another device failed")
             with self._cv:
-                self._cv.wait_for(lambda: self._pending or self._stop.is_set(), timeout=1.0)
+                self._cv.wait_for(lambda: self._pending or self._stop.is_set() or self._want_device, timeout=1.0)
                 batch = list(self._pending.items())
                 self._pending.clear()
             if not batch:
@@ -215,7 +244,7 @@ class Detector:
         t0 = time.perf_counter()
         try:
             results = self._model.predict([b[1][0] for b in batch], conf=self.cfg.confidence,
-                                          classes=self._class_ids, device=self.cfg.device,
+                                          classes=self._class_ids, device=self._device,
                                           verbose=False)
         except Exception:  # noqa: BLE001
             log.exception("inference failed")
@@ -467,3 +496,26 @@ def _crop(img: np.ndarray, nb: list[float], pad: float) -> Optional[np.ndarray]:
     if x2 - x1 < 4 or y2 - y1 < 4:
         return None
     return img[y1:y2, x1:x2].copy()
+
+
+def _free_gpu_memory() -> None:
+    try:
+        import gc
+        import torch
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _cpu_threads(device: str) -> None:
+    """On the CPU, use at most half the cores, so recording and the web UI stay responsive."""
+    if device != "cpu":
+        return
+    try:
+        import os
+        import torch
+        torch.set_num_threads(max(2, (os.cpu_count() or 4) // 2))
+    except Exception:  # noqa: BLE001
+        pass

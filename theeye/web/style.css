@@ -21,6 +21,9 @@ nav button.active, nav button:hover { color: var(--text); background: var(--pane
 #stats .st { background: var(--panel2); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; white-space: nowrap;
   font-variant-numeric: tabular-nums; cursor: default; }
 #stats .st.warn { border-color: #ffd60a; color: #ffd60a; }
+#stats button.st { font: inherit; color: inherit; cursor: pointer; }
+#stats button.st:hover { border-color: var(--accent); }
+#stats .ai-dev.cpu { border-color: var(--accent); color: var(--accent); }
 #stats .rec-dot { color: var(--rec); font-weight: normal; }
 main { padding: 16px; }
 .tab { display: none; } .tab.active { display: block; }
