@@ -530,6 +530,14 @@ class Hub:
         """
         if not t.best_bbox or t.best_frame is None:
             return
+        # Only a view from during this recording, and not of a parked/sitting vehicle: a car parked for hours
+        # is linked to every recording on that camera, and its old best view became every one's thumbnail.
+        now = time.time()
+        if t.parked or (self.detector and self.detector._sitting(t, now)):
+            return
+        span = self.db.one("SELECT start_ts, end_ts FROM events WHERE id=?", (eid,))
+        if not span or not (span["start_ts"] - 1 <= t.best_ts <= (span["end_ts"] or now) + 1):
+            return
         x1, y1, x2, y2 = t.best_bbox
         score = t.best_conf * math.sqrt(max(0.0, (x2 - x1) * (y2 - y1)))   # confident and large wins
         row = self.db.one("SELECT thumb_score, snapshot_path FROM events WHERE id=?", (eid,))

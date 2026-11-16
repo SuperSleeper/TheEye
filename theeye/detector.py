@@ -64,7 +64,9 @@ class Track:
     seen_moving: bool = False        # motion seen inside its box at some point (sticky for the track)
     start_bbox: list[float] = field(default_factory=list)   # where the track began
     at_still_spot: bool = False      # box is where a vehicle was just sitting: must drive to count as moving
-    travel_hits: int = 0             # consecutive checks with the box away from where it began
+    travel_hits: int = 0             # consecutive checks with the box away from its anchor
+    anchor_bbox: list[float] = field(default_factory=list)   # where it last drove to
+    anchor_ts: float = 0.0           # when it last drove (or began): "sitting" is measured from here
     travelled: bool = False          # the box itself left its starting spot (a parked car with a shadow or a
                                      # passer-by over it is "seen moving" but never travels)
     confirmed: bool = True           # counts for rules: seen moving, or motion confirmation is off
@@ -275,15 +277,20 @@ class Detector:
                 self._seq += 1
                 best = Track(f"{cam}:{int(ts)}:{self._seq}", cam, label, nb, conf, ts, ts)
                 best.still_bbox, best.still_since, best.start_bbox = nb, ts, nb
+                best.anchor_bbox, best.anchor_ts = nb, ts
                 if self._was_parked_here(cam, label, nb, ts):   # reappeared in a known parked spot
                     best.still_since = ts - self.cfg.stationary_seconds
                 cam_tracks[best.key] = best
             else:
                 unmatched.discard(best.key)
             best.bbox, best.conf, best.last_ts, best.hits = nb, conf, ts, best.hits + 1
-            if not best.travelled:                    # two checks in a row: one bad box isn't travel
-                best.travel_hits = best.travel_hits + 1 if _iou(best.start_bbox, nb) < TRAVEL_IOU else 0
-                best.travelled = best.travel_hits >= 2
+            # Driving = the box left its anchor on two checks in a row (one bad box isn't travel). The anchor
+            # then moves along, so a car that drove once and has sat since counts as sitting again: a parked car
+            # whose box once jumped (someone walked in front) used to count as driving for good.
+            best.travel_hits = best.travel_hits + 1 if _iou(best.anchor_bbox, nb) < TRAVEL_IOU else 0
+            if best.travel_hits >= 2:
+                best.travelled, best.travel_hits = True, 0
+                best.anchor_bbox, best.anchor_ts = nb, ts
             if _iou(best.still_bbox, nb) < PARK_IOU:          # it moved: restart the stillness clock
                 best.still_bbox, best.still_since = nb, ts
             best.parked = self.cfg.stationary_seconds > 0 and ts - best.still_since >= self.cfg.stationary_seconds
@@ -297,7 +304,8 @@ class Detector:
             # (a bush in front) never counts as "parked", and its track never ends to leave a still spot.
             best.at_still_spot = label in VEHICLES and (
                 self._sitting(best, ts) or self._was_still_here(cam, label, nb, ts))
-            moved = best.travelled or (best.seen_moving and not best.at_still_spot)
+            drove_lately = best.travelled and ts - best.anchor_ts < STILL_SPOT_MIN_S
+            moved = drove_lately or (best.seen_moving and not best.at_still_spot)
             # Seen at least twice: one-frame blips (a sliver of a car at the frame edge, a far-off misread)
             # were starting recordings on their only frame, and are thrown away as noise right after anyway.
             best.confirmed = best.hits >= MIN_HITS and (moved or not self.cfg.require_motion or self.motion_in_box is None)
@@ -338,8 +346,8 @@ class Detector:
 
     @staticmethod
     def _sitting(t: Track, ts: float) -> bool:
-        """A vehicle that has been in view STILL_SPOT_MIN_S without driving."""
-        return t.label in VEHICLES and not t.travelled and ts - t.first_ts >= STILL_SPOT_MIN_S
+        """A vehicle that hasn't driven for STILL_SPOT_MIN_S (or since it appeared)."""
+        return t.label in VEHICLES and ts - t.anchor_ts >= STILL_SPOT_MIN_S
 
     def _was_parked_here(self, cam: str, label: str, bbox: list[float], ts: float) -> bool:
         if self.cfg.stationary_seconds <= 0:
@@ -410,8 +418,7 @@ class Detector:
                         self._parked_spots.setdefault(t.camera_id, []).append((t.label, t.bbox, t.last_ts))
                     # A vehicle that sat there (or a re-track of one that did) marks the spot. Not short tracks:
                     # passing cars split into fragments would mark the whole lane and stop every car after.
-                    if t.label in VEHICLES and not t.travelled and (
-                            t.last_ts - t.first_ts >= STILL_SPOT_MIN_S or t.at_still_spot):
+                    if t.label in VEHICLES and (self._sitting(t, t.last_ts) or t.at_still_spot):
                         self._still_spots.setdefault(t.camera_id, []).append((t.label, t.bbox, t.last_ts))
             for t in ended:            # outside the lock: snapshot/embedding work is slow
                 try:
