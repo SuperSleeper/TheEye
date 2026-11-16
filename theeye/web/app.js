@@ -787,7 +787,10 @@ api('/api/vehicles?status=flagged&limit=1').then(r => updateVehicleBadge(r.count
 // Every kind of object found in a recording, with its best certainty; the one that matched is highlighted.
 // Detector label, or the closer look at an animal: "squirrel (was bird)", "crow", "pomeranian".
 const SERVICES = new Set(['Amazon', 'UPS', 'FedEx', 'USPS']);
-const animalName = d => d.who ? d.who : SERVICES.has(d.subtype) ? `${d.subtype} ${d.label === 'person' ? 'driver' : d.label}`
+const EMERGENCY_NAMES = { Police: ['Police car', 'Police officer'], Fire: ['Fire truck', 'Firefighter'], EMT: ['Ambulance', 'EMT'] };
+const animalName = d => d.who ? d.who
+  : EMERGENCY_NAMES[d.subtype] ? EMERGENCY_NAMES[d.subtype][d.label === 'person' ? 1 : 0]
+  : SERVICES.has(d.subtype) ? `${d.subtype} ${d.label === 'person' ? 'driver' : d.label}`
   : d.subtype || d.animal ? `${d.subtype || d.animal}${d.animal ? ` (detector said ${d.label})` : ''}` : d.label;
 const tagChips = (tags, hit) => (tags || []).map(t =>
   `<span class="chip${t.label === hit ? ' hit' : ''}">${esc(t.label)} ${Math.round(t.conf * 100)}%</span>`).join('');

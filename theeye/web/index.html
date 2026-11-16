@@ -258,12 +258,13 @@
       </div>
 
       <div class="card-s">
-        <div class="card-h"><h2>Delivery services</h2></div>
+        <div class="card-h"><h2>Delivery &amp; emergency services</h2></div>
         <p class="muted small">Tags Amazon, UPS, FedEx and USPS vehicles (logo, colours, shape) using the visual-search
           model already running, and the recordings they're in, so you can search “ups today” or “mail truck”. Uniformed
-          drivers are only tagged from a large, clear view: at normal camera distances a uniform is too small to tell.</p>
+          drivers are only tagged from a large, clear view: at normal camera distances a uniform is too small to tell.
+          Police cars, fire trucks and ambulances (and their crews) are tagged too, with a stricter 98% bar.</p>
         <div class="fgrid">
-          <label class="row"><input type="checkbox" data-k="delivery.enabled"> Recognise delivery services</label>
+          <label class="row"><input type="checkbox" data-k="delivery.enabled"> Recognise delivery services, police, fire and ambulances</label>
           <label>Minimum certainty (0.5–0.999) <input type="number" min="0.5" max="0.999" step="0.01" data-k="delivery.min_confidence" data-num>
             <span class="small muted">0.95 was right 13 times out of 13 on this footage; lower finds more but guesses more</span></label>
         </div>

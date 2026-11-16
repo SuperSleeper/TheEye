@@ -20,6 +20,8 @@ PERSON_LABELS = {"person"}
 TEMPLATES = ["{}", "a photo of {}.", "a security camera photo of {}."]
 SCALE = 100.0
 MIN_SIDE = 0.07          # box width and height, as a share of the frame
+EMERGENCY = {"Police", "Fire", "EMT"}
+EMERGENCY_MIN = 0.98     # a wrong police/fire/ambulance tag is worse than a missed one: higher bar
 
 SERVICES: dict[str, dict[str, list[str]]] = {
     "Amazon": {
@@ -48,16 +50,35 @@ SERVICES: dict[str, dict[str, list[str]]] = {
         "person": ["a USPS mail carrier in a blue postal uniform carrying mail",
                    "a mailman with a mail bag in a blue-grey postal uniform"],
     },
+    # Emergency services: same machinery, same 0.95 bar.
+    "Police": {
+        "vehicle": ["a police car with a light bar on the roof", "a black and white police patrol car",
+                    "a police SUV with emergency lights", "a police cruiser with POLICE written on the side"],
+        "person": ["a police officer in uniform with a duty belt and badge", "a uniformed cop wearing a police vest"],
+    },
+    "Fire": {
+        "vehicle": ["a red fire engine", "a red fire truck with a ladder", "a fire department truck with emergency lights"],
+        "person": ["a firefighter in turnout gear and helmet", "a firefighter in a tan and yellow fire suit"],
+    },
+    "EMT": {
+        "vehicle": ["an ambulance", "a white ambulance with red stripes and emergency lights",
+                    "a paramedic ambulance with the star of life symbol"],
+        "person": ["a paramedic in uniform carrying a medical bag", "an EMT pushing a stretcher"],
+    },
 }
 ORDINARY: dict[str, list[str]] = {
     "vehicle": ["a regular passenger car", "a sedan", "an SUV", "a pickup truck", "a minivan", "a white work van",
                 "a plain white cargo van", "a box truck", "a school bus", "a city bus", "a parked car on a residential street",
-                "a car driving down the street", "a garbage truck", "a tow truck", "a police car", "a red car", "a black car",
+                "a car driving down the street", "a garbage truck", "a tow truck", "a red car", "a black car",
                 "a silver car", "a white car", "a blue car", "a brown car", "a blue sedan", "a blue hatchback",
-                "a dark brown sedan", "a dark blue SUV", "a white SUV", "a white pickup truck", "a delivery-sized white truck without logos"],
+                "a dark brown sedan", "a dark blue SUV", "a white SUV", "a white pickup truck", "a delivery-sized white truck without logos",
+                "a red pickup truck", "a red SUV", "a black SUV", "a white van with a ladder rack", "a dark sedan",
+                "a car's red tail lights at dusk", "a blurry red light at night", "a car with its headlights on at night",
+                "a dark car and a white car parked at dusk"],
     "person": ["a person walking", "a person in casual clothes", "a man in a t-shirt", "a woman in a jacket", "a child",
                "a person walking a dog", "a jogger", "a person in a hoodie", "a person in a brown jacket",
-               "a person in a blue shirt", "a person carrying a bag", "a neighbor in the yard", "a person on a bicycle"],
+               "a person in a blue shirt", "a person carrying a bag", "a neighbor in the yard", "a person on a bicycle",
+               "a person in a dark jacket", "a person in a high-visibility work vest", "a person in a navy blue shirt"],
 }
 
 
@@ -113,4 +134,5 @@ class DeliveryClassifier:
         if not s:
             return None
         best = max((k for k in s if k), key=s.get)
-        return (best, s[best]) if s[best] >= self.min_confidence else None
+        need = max(self.min_confidence, EMERGENCY_MIN) if best in EMERGENCY else self.min_confidence
+        return (best, s[best]) if s[best] >= need else None

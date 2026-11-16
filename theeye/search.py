@@ -51,7 +51,15 @@ LABEL_WORDS = {
 SERVICE_KEYS = {s.lower() for s in SERVICES}
 SERVICE_WORDS = {"amazon": "amazon", "prime": "amazon", "ups": "ups", "fedex": "fedex", "fed ex": "fedex",
                  "usps": "usps", "postal": "usps", "post office": "usps", "mailman": "usps", "mail carrier": "usps",
-                 "mail truck": "usps", "mail": "usps", "postman": "usps"}
+                 "mail truck": "usps", "mail": "usps", "postman": "usps",
+                 # emergency services (longer phrases first: "fire truck" before "fire")
+                 "police car": "police", "police officer": "police", "police": "police", "cops": "police",
+                 "cop": "police", "sheriff": "police", "patrol car": "police",
+                 "fire truck": "fire", "fire engine": "fire", "firefighters": "fire", "firefighter": "fire",
+                 "fire department": "fire", "fireman": "fire", "fire": "fire",
+                 "ambulance": "emt", "paramedics": "emt", "paramedic": "emt", "emts": "emt", "emt": "emt", "ems": "emt"}
+DELIVERY_KEYS = {"amazon", "ups", "fedex", "usps"}
+EMERGENCY_KEYS = {"police", "fire", "emt"}
 STOP = {"a", "an", "the", "any", "some", "of", "in", "on", "at", "by", "near", "with", "from", "to", "and", "or",
         "was", "were", "is", "are", "who", "that", "there", "show", "me", "find", "all", "seen", "came",
         "going", "coming", "walking", "driving", "leaving", "arriving", "out", "my", "our", "few", "couple",
@@ -229,8 +237,10 @@ class Searcher:
             if re.search(rf"\b{re.escape(n)}(e?s)?\b", low):
                 found.append(n)
                 low = re.sub(rf"\b{re.escape(n)}(e?s)?\b", " ", low)
-        if not any(s in SERVICE_KEYS for s in found) and re.search(r"\b(deliver(y|ies)|delivery (truck|van|driver)s?|courier)\b", low):
-            found += sorted(SERVICE_KEYS)             # "delivery" with no service named: any of them
+        if not any(s in DELIVERY_KEYS for s in found) and re.search(r"\b(deliver(y|ies)|delivery (truck|van|driver)s?|courier)\b", low):
+            found += sorted(DELIVERY_KEYS)            # "delivery" with no service named: any of them
+        if not any(s in EMERGENCY_KEYS for s in found) and re.search(r"\b(emergency|first responders?)\b", low):
+            found += sorted(EMERGENCY_KEYS)
         found = list(dict.fromkeys(found))
         if not found:
             return
@@ -246,7 +256,7 @@ class Searcher:
             vis = re.sub(rf"\b{word}\b", " ", vis)
         if services:
             vis = re.sub(r"\b(truck|trucks|van|vans|car|cars|driver|drivers|delivery|deliveries|carrier|courier|guy|"
-                         r"man|woman|person|people|vehicle|vehicles)\b", " ", vis)
+                         r"man|woman|person|people|vehicle|vehicles|engine|officer|officers|emergency)\b", " ", vis)
         f["visual"] = " ".join(vis.split()) if any(w not in STOP for w in vis.split()) else ""
 
     def _named_cameras(self, text: str) -> tuple[list[str], str]:
