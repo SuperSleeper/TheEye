@@ -19,6 +19,7 @@ import numpy as np
 from . import timeparse
 from .config import LLMConfig
 from .db import DB, jload
+from .delivery import SERVICES
 from .subtypes import ANIMAL_LABELS
 
 log = logging.getLogger("theeye.search")
@@ -46,6 +47,11 @@ LABEL_WORDS = {
     "cats": ["cat"], "bird": ["bird"], "birds": ["bird"], "animal": ["dog", "cat", "bird"],
     "animals": ["dog", "cat", "bird"],
 }
+# Delivery services as people say them -> the stored tag (lower case for matching).
+SERVICE_KEYS = {s.lower() for s in SERVICES}
+SERVICE_WORDS = {"amazon": "amazon", "prime": "amazon", "ups": "ups", "fedex": "fedex", "fed ex": "fedex",
+                 "usps": "usps", "postal": "usps", "post office": "usps", "mailman": "usps", "mail carrier": "usps",
+                 "mail truck": "usps", "mail": "usps", "postman": "usps"}
 STOP = {"a", "an", "the", "any", "some", "of", "in", "on", "at", "by", "near", "with", "from", "to", "and", "or",
         "was", "were", "is", "are", "who", "that", "there", "show", "me", "find", "all", "seen", "came",
         "going", "coming", "walking", "driving", "leaving", "arriving", "out", "my", "our", "few", "couple",
@@ -196,21 +202,35 @@ class Searcher:
     def _apply_animals(self, q: str, f: dict) -> None:
         """Animal, breed and species names in the question ("squirrel", "crow", "pomeranian") become a filter
         on what the closer look at each animal found. A plain "bird" / "dog" / "cat" stays a label filter."""
-        if not self.animals:
-            return
         low = " " + re.sub(r"[^a-z0-9 ]+", " ", q.lower()) + " "
         found = []
-        for n in sorted(self.animals.names(), key=len, reverse=True):     # "german shepherd" before "shepherd"
+        for word, svc in SERVICE_WORDS.items():      # "mailman" -> usps, "fed ex" -> fedex
+            if re.search(rf"\b{word}\b", low):
+                found.append(svc)
+                low = re.sub(rf"\b{word}\b", " ", low)
+        names = self.animals.names() if self.animals else set()
+        for n in sorted(names, key=len, reverse=True):     # "german shepherd" before "shepherd"
             if re.search(rf"\b{re.escape(n)}(e?s)?\b", low):
                 found.append(n)
                 low = re.sub(rf"\b{re.escape(n)}(e?s)?\b", " ", low)
+        if not any(s in SERVICE_KEYS for s in found) and re.search(r"\b(deliver(y|ies)|delivery (truck|van|driver)s?|courier)\b", low):
+            found += sorted(SERVICE_KEYS)             # "delivery" with no service named: any of them
+        found = list(dict.fromkeys(found))
         if not found:
             return
+        services = [s for s in found if s in SERVICE_KEYS]
         f["animals"] = found
         f["labels"] = [l for l in (f.get("labels") or []) if l not in ANIMAL_LABELS]
+        if services:                       # "ups truck" / "amazon driver": the service tag is the filter
+            f["labels"] = []
         vis = (f.get("visual") or "").lower()
         for n in found:
             vis = re.sub(rf"\b{re.escape(n)}(e?s)?\b", " ", vis)
+        for word in SERVICE_WORDS:
+            vis = re.sub(rf"\b{word}\b", " ", vis)
+        if services:
+            vis = re.sub(r"\b(truck|trucks|van|vans|car|cars|driver|drivers|delivery|deliveries|carrier|courier|guy|"
+                         r"man|woman|person|people|vehicle|vehicles)\b", " ", vis)
         f["visual"] = " ".join(vis.split()) if any(w not in STOP for w in vis.split()) else ""
 
     def _named_cameras(self, text: str) -> tuple[list[str], str]:
@@ -302,7 +322,7 @@ class Searcher:
         names = f.get("animals") or []
         if names:
             q = ",".join("?" * len(names))
-            where.append(f"(kind IN ({q}) OR subtype IN ({q}))")
+            where.append(f"(LOWER(kind) IN ({q}) OR LOWER(subtype) IN ({q}))")
             args += names + names
         plate = (f.get("plate") or "").upper().replace(" ", "")
         if plate:

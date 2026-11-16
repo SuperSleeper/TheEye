@@ -777,8 +777,9 @@ api('/api/vehicles?status=flagged&limit=1').then(r => updateVehicleBadge(r.count
 // ---------------------------------------------------------------- search
 // Every kind of object found in a recording, with its best certainty; the one that matched is highlighted.
 // Detector label, or the closer look at an animal: "squirrel (was bird)", "crow", "pomeranian".
-const animalName = d => d.subtype || d.animal
-  ? `${d.subtype || d.animal}${d.animal ? ` (detector said ${d.label})` : ''}` : d.label;
+const SERVICES = new Set(['Amazon', 'UPS', 'FedEx', 'USPS']);
+const animalName = d => SERVICES.has(d.subtype) ? `${d.subtype} ${d.label === 'person' ? 'driver' : d.label}`
+  : d.subtype || d.animal ? `${d.subtype || d.animal}${d.animal ? ` (detector said ${d.label})` : ''}` : d.label;
 const tagChips = (tags, hit) => (tags || []).map(t =>
   `<span class="chip${t.label === hit ? ' hit' : ''}">${esc(t.label)} ${Math.round(t.conf * 100)}%</span>`).join('');
 // Camera filter for searches. Stores the cameras NOT ticked, so a newly added camera is searched by default.

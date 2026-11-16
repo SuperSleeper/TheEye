@@ -34,6 +34,7 @@ from .vehicles import VehicleRegistry
 from .rules import CamState, Rule, evaluate, is_loud
 from . import gpu
 from .plates import PlateRefiner
+from .delivery import PERSON_LABELS, VEHICLE_LABELS, DeliveryClassifier
 from .subtypes import ANIMAL_LABELS, SubtypeClassifier
 
 log = logging.getLogger("theeye.hub")
@@ -69,6 +70,7 @@ class Hub:
         self.embedder = (Embedder(cfg.detector.clip_model, cfg.detector.clip_pretrained, cfg.detector.device)
                          if cfg.detector.embeddings else None)
         self.animals = SubtypeClassifier(cfg.animals, self.embedder) if self.embedder else None
+        self.delivery = DeliveryClassifier(self.embedder, cfg.delivery.min_confidence) if self.embedder else None
         self.plates = PlateRefiner(self)
         self.detector: Optional[Detector] = None
         if cfg.detector.enabled:
@@ -110,6 +112,7 @@ class Hub:
                              name="vehicle-backfill", daemon=True).start()
         threading.Thread(target=self._retention, name="retention", daemon=True).start()
         threading.Thread(target=self._animal_backfill, name="animal-backfill", daemon=True).start()
+        threading.Thread(target=self._delivery_backfill, name="delivery-backfill", daemon=True).start()
         threading.Thread(target=self._repair_interrupted, name="clip-repair", daemon=True).start()
 
     def stop(self) -> None:
@@ -168,6 +171,8 @@ class Hub:
         self.vehicles.cfg = new.vehicles
         if self.animals:
             self.animals.cfg = new.animals
+        if self.delivery:
+            self.delivery.min_confidence = new.delivery.min_confidence
         self.cfg = new
         return restart
 
@@ -283,7 +288,7 @@ class Hub:
             self.db.execute("DELETE FROM event_links WHERE kind='detection' AND ref_id=?", (t.db_id,))
             return
         emb = self.detector.embed(t) if self.detector else None
-        animal = self._classify_animal(t.label, emb)
+        animal = self._classify_animal(t.label, emb) or self._classify_delivery(t.label, emb, t.best_bbox)
         if animal:
             t.kind, t.subtype = animal[0], animal[1]
         snap = self.detector.save_snapshot(t) if self.detector else None    # after: the picture shows the better name
@@ -303,7 +308,7 @@ class Hub:
                 for ev in self._events_for(t.camera_id):
                     ev.plates.add(t.plate)
                     self._flush_event_meta(ev)
-        if t.label in ANIMAL_LABELS and emb is not None:
+        if emb is not None and (t.label in ANIMAL_LABELS or self._delivery_on(t.label)):
             self._store_animal(t.db_id, t.label, animal)
         for row in self.db.all("SELECT event_id FROM event_links WHERE kind='detection' AND ref_id=?", (t.db_id,)):
             self._event_thumb_from_track(row["event_id"], t)
@@ -317,6 +322,43 @@ class Hub:
         except Exception:  # noqa: BLE001
             log.exception("animal classification failed")
             return None
+
+    # ------------------------------------------------------- delivery services
+    def _delivery_on(self, label: str) -> bool:
+        return bool(self.delivery and self.cfg.delivery.enabled and label in (VEHICLE_LABELS | PERSON_LABELS))
+
+    def _classify_delivery(self, label: str, emb: Optional[bytes], bbox):
+        """(label, service, certainty) for an Amazon/UPS/FedEx/USPS vehicle or uniform, in the same shape as an
+        animal's closer look, so it's stored, tagged and searched the same way."""
+        if emb is None or not self._delivery_on(label):
+            return None
+        try:
+            r = self.delivery.classify(label, np.frombuffer(emb, dtype=np.float32), bbox)
+        except Exception:  # noqa: BLE001
+            log.exception("delivery classification failed")
+            return None
+        if r:
+            log.info("delivery: %s %s (%.0f%%)", r[0], label, r[1] * 100)
+        return (label, r[0], r[1]) if r else None
+
+    def _delivery_backfill(self) -> None:
+        """One pass over people and vehicles recorded before this existed."""
+        if not self.delivery or not self.cfg.delivery.enabled:
+            return
+        labels = sorted(VEHICLE_LABELS | PERSON_LABELS)
+        n = tagged = 0
+        while not self._stop.is_set():
+            rows = self.db.all(
+                "SELECT id, label, embedding, bbox FROM detections WHERE subtype_conf IS NULL AND embedding IS NOT NULL"
+                f" AND label IN ({','.join('?' * len(labels))}) LIMIT 500", labels)
+            if not rows:
+                break
+            for r in rows:
+                a = self._classify_delivery(r["label"], r["embedding"], jload(r["bbox"], []))
+                self._store_animal(r["id"], r["label"], a)
+                n, tagged = n + 1, tagged + bool(a)
+        if n:
+            log.info("delivery: looked at %d past people/vehicles, %d tagged with a delivery service", n, tagged)
 
     def _store_animal(self, det_id: int, label: str, animal) -> None:
         """Save the closer look at an animal (subtype_conf 0 = looked, nothing surer than the label), and add

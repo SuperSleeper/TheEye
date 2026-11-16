@@ -205,6 +205,13 @@ class AnimalsConfig(BaseModel):
                                                                     # ("white cat") beat breeds on white dogs
 
 
+class DeliveryConfig(BaseModel):
+    """Tag Amazon / UPS / FedEx / USPS vehicles (and, from a large clear view, uniformed people), using the CLIP
+    fingerprint every track already gets. Applies live; needs detector.embeddings on."""
+    enabled: bool = True
+    min_confidence: float = Field(0.95, ge=0.5, le=0.999)   # tested on 2 days of footage: 13/13 right at 0.95
+
+
 class Config(BaseModel):
     credentials: list[Credential] = Field(default_factory=list)
     cameras: list[CameraConfig] = Field(default_factory=list)
@@ -214,6 +221,7 @@ class Config(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     vehicles: VehiclesConfig = Field(default_factory=VehiclesConfig)
     animals: AnimalsConfig = Field(default_factory=AnimalsConfig)
+    delivery: DeliveryConfig = Field(default_factory=DeliveryConfig)
 
     @model_validator(mode="before")
     @classmethod
