@@ -24,7 +24,7 @@ log = logging.getLogger("theeye.faces")
 DETECTOR = "face_detection_yunet_2023mar.onnx"
 RECOGNIZER = "face_recognition_sface_2021dec.onnx"
 MIN_FACE_PX = 40          # smaller faces carry too little detail to recognise
-MATCH = 0.42              # tag a face with a person at this similarity to their confirmed faces
+MATCH = 0.50              # auto-tag at this similarity to confirmed faces (with 2 examples, a stranger hit 0.42)
 SUGGEST = 0.30            # show as "is this ...?" at this similarity
 
 
