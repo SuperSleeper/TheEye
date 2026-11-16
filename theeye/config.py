@@ -213,6 +213,11 @@ class DeliveryConfig(BaseModel):
     min_confidence: float = Field(0.95, ge=0.5, le=0.999)   # tested on 2 days of footage: 13/13 right at 0.95
 
 
+class PeopleConfig(BaseModel):
+    """Recognise named people (family members) by face. Face models live in <install>/models."""
+    enabled: bool = True
+
+
 class Config(BaseModel):
     credentials: list[Credential] = Field(default_factory=list)
     cameras: list[CameraConfig] = Field(default_factory=list)
@@ -223,6 +228,7 @@ class Config(BaseModel):
     vehicles: VehiclesConfig = Field(default_factory=VehiclesConfig)
     animals: AnimalsConfig = Field(default_factory=AnimalsConfig)
     delivery: DeliveryConfig = Field(default_factory=DeliveryConfig)
+    people: PeopleConfig = Field(default_factory=PeopleConfig)
 
     @model_validator(mode="before")
     @classmethod

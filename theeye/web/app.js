@@ -36,7 +36,7 @@ function showTab(name) {
   for (const k in timers) delete timers[k];
   if (name !== 'live') { $('#live-grid').innerHTML = ''; closeFocus?.(); }
   queueMicrotask(() => lvUpdate());
-  ({ live: initLive, events: loadEvents, triggers: loadTriggers, zones: initZones, rules: initRules, setup: () => initSetup(), search: () => { renderSearchCams(); $('#search-q').focus(); }, vehicles: loadVehicles })[name]?.();
+  ({ live: initLive, events: loadEvents, triggers: loadTriggers, zones: initZones, rules: initRules, setup: () => initSetup(), search: () => { renderSearchCams(); $('#search-q').focus(); }, vehicles: loadVehicles, people: loadPeople })[name]?.();
   location.hash = name;
   $('#overlay-toggles').hidden = name !== 'live';       // overlays only exist on Live
 }
@@ -711,10 +711,19 @@ async function openEvent(id, seek) {
       : '<p class="muted">No clip (recording disabled, pruned, or still pending).</p>'}
     <div><b>Detections</b> (click to jump)<br>${e.detections.map(d => `
       <span class="det" data-seek="${d.seek}">${d.snapshot_path ? `<img src="/media/${esc(d.snapshot_path)}">` : ''}
-      ${esc(animalName(d))} ${(d.confidence * 100).toFixed(0)}%${d.plate ? ` <span class="chip plate">${esc(d.plate)}</span>` : ''}</span>`).join('') || '<span class="muted">none</span>'}</div>
+      ${esc(animalName(d))} ${(d.confidence * 100).toFixed(0)}%${d.plate ? ` <span class="chip plate">${esc(d.plate)}</span>` : ''}
+      ${d.label === 'person' && PEOPLE.list.length ? `<select class="who" data-det="${d.id}" title="Who is this? Teaches face recognition">
+        <option value="">${d.who ? esc(d.who) : 'Who is this?'}</option>${PEOPLE.list.filter(p => p.name !== d.who).map(p => `<option value="${p.id}">This is ${esc(p.name)}</option>`).join('')}</select>` : ''}</span>`).join('') || '<span class="muted">none</span>'}</div>
     <div style="margin-top:6px"><b>Motion triggers</b>: ${e.motion.length} ${e.motion.map(m => `<span class="chip">zone ${m.zone_id || 'full'} · ${fmtDur(m.end_ts ? m.end_ts - m.start_ts : null)}</span>`).join(' ')}</div>
     <div style="margin-top:8px"><button id="pl-del" class="danger">Delete event</button></div>`;
-  $$('#pl-info .det').forEach(d => d.onclick = () => { v.currentTime = +d.dataset.seek; v.play(); });
+  $$('#pl-info .det').forEach(d => d.onclick = ev => { if (ev.target.closest('select')) return; v.currentTime = +d.dataset.seek; v.play(); });
+  $$('#pl-info select.who').forEach(s => s.onchange = async () => {
+    if (!s.value) return;
+    const name = s.selectedOptions[0].textContent.replace(/^This is /, '');
+    s.disabled = true;
+    try { await api(`/api/detections/${s.dataset.det}/person`, { method: 'POST', body: { person_id: +s.value } }); openEvent(id, v.currentTime); }
+    catch (err) { s.disabled = false; s.value = ''; alertInline(s, err.message.includes('422') ? `No clear face of ${name} here (too small, turned away or dark)` : 'Failed: ' + err.message); }
+  });
   if ($('#pl-pre')) {
     $('#pl-pre').onclick = () => { v.currentTime = e.clip_offset; v.play(); };
     $('#pl-act').onclick = () => { v.currentTime = e.play_from ?? e.clip_offset; v.play(); };
@@ -778,7 +787,7 @@ api('/api/vehicles?status=flagged&limit=1').then(r => updateVehicleBadge(r.count
 // Every kind of object found in a recording, with its best certainty; the one that matched is highlighted.
 // Detector label, or the closer look at an animal: "squirrel (was bird)", "crow", "pomeranian".
 const SERVICES = new Set(['Amazon', 'UPS', 'FedEx', 'USPS']);
-const animalName = d => SERVICES.has(d.subtype) ? `${d.subtype} ${d.label === 'person' ? 'driver' : d.label}`
+const animalName = d => d.who ? d.who : SERVICES.has(d.subtype) ? `${d.subtype} ${d.label === 'person' ? 'driver' : d.label}`
   : d.subtype || d.animal ? `${d.subtype || d.animal}${d.animal ? ` (detector said ${d.label})` : ''}` : d.label;
 const tagChips = (tags, hit) => (tags || []).map(t =>
   `<span class="chip${t.label === hit ? ' hit' : ''}">${esc(t.label)} ${Math.round(t.conf * 100)}%</span>`).join('');
@@ -1647,3 +1656,58 @@ function refreshCameraSelects() {
   for (const sel of ['#ev-cam', '#tr-cam']) $(sel).innerHTML = '<option value="">All cameras</option>' + opts;
   $('#zn-cam').innerHTML = opts;
 }
+
+// ---------------------------------------------------------------- people (face recognition)
+const PEOPLE = { list: [] };
+function alertInline(el, msg) {           // a short note next to a control, instead of a blocking dialog
+  const n = document.createElement('span'); n.className = 'small warn'; n.textContent = ' ' + msg;
+  el.after(n); setTimeout(() => n.remove(), 6000);
+}
+async function refreshPeople() { try { PEOPLE.list = (await api('/api/people')).people; } catch { PEOPLE.list = []; } }
+refreshPeople();
+async function loadPeople() {
+  const r = await api('/api/people');
+  PEOPLE.list = r.people;
+  const st = r.stats || {};
+  $('#people-stats').textContent = !r.models ? 'face models missing: recognition off'
+    : `${st.faces || 0} faces found this run` + (st.scan_left ? ` · ${st.scan_left} past people still to look through` : '');
+  const face = f => `<img class="face" loading="lazy" src="/media/${esc(f.path)}" title="${esc(camName(f.camera_id))} · ${esc(fmtTime(f.ts))}">`;
+  $('#people-list').innerHTML = r.people.map(p => `
+    <div class="card-s person" data-pid="${p.id}">
+      <div class="card-h"><h2>${esc(p.name)}</h2>
+        <span class="muted small">${p.n_confirmed} confirmed · seen ${p.n_seen}×${p.last_seen ? ' · last ' + esc(fmtTime(p.last_seen)) : ''}</span>
+        <button type="button" class="danger small-btn" data-del="${p.id}" title="Remove ${esc(p.name)} and their face examples">Remove</button></div>
+      <div class="faces">${p.confirmed.map(face).join('') || '<span class="muted small">No confirmed faces yet: choose “This is ' + esc(p.name) + '” on a person in a recording.</span>'}</div>
+      <div class="sub-h">Is this ${esc(p.name)}?</div>
+      <div class="sugg" data-pid="${p.id}"><span class="muted small">Looking…</span></div>
+    </div>`).join('') || '<p class="muted">No people yet.</p>';
+  $$('#people-list [data-del]').forEach(b => b.onclick = async () => {
+    if (b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = 'Click again to remove'; return; }
+    await api(`/api/people/${b.dataset.del}`, { method: 'DELETE' }); loadPeople();
+  });
+  for (const p of r.people) loadSuggestions(p);
+}
+async function loadSuggestions(p) {
+  const box = $(`#people-list .sugg[data-pid="${p.id}"]`);
+  const s = await api(`/api/people/${p.id}/suggestions?limit=40`);
+  box.innerHTML = s.map(f => `
+    <div class="sg" data-fid="${f.id}">
+      <img class="face" loading="lazy" src="/media/${esc(f.path)}">
+      <div class="small muted">${esc(camName(f.camera_id))}<br>${esc(new Date(f.ts * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}</div>
+      <div class="small">${Math.round(f.score * 100)}% ${f.status === 'auto' ? '· tagged' : ''}</div>
+      <div class="row" style="gap:4px"><button type="button" data-v="yes" title="Yes, this is ${esc(p.name)}">✓</button>
+        <button type="button" data-v="no" title="No, not ${esc(p.name)}">✗</button></div>
+    </div>`).join('') || `<span class="muted small">No suggestions${p.n_confirmed ? '' : ' until a face is confirmed'}. More appear as past recordings are looked through.</span>`;
+  $$('.sg button', box).forEach(b => b.onclick = async () => {
+    const sg = b.closest('.sg');
+    await api(`/api/faces/${sg.dataset.fid}`, { method: 'POST', body: { person_id: p.id, verdict: b.dataset.v } });
+    sg.remove();
+    if (b.dataset.v === 'yes' && !$('.sg', box)) setTimeout(() => loadSuggestions(p), 1500);    // re-match runs in the background
+  });
+}
+$('#people-add').onsubmit = async ev => {
+  ev.preventDefault();
+  const f = ev.target;
+  try { await api('/api/people', { method: 'POST', body: { name: f.name.value } }); f.reset(); await refreshPeople(); loadPeople(); }
+  catch (err) { alertInline(f.querySelector('button'), err.message.includes('409') ? 'That name is already used' : 'Failed: ' + err.message); }
+};

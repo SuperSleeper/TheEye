@@ -78,6 +78,28 @@ CREATE TABLE IF NOT EXISTS sound_levels (
 );
 CREATE INDEX IF NOT EXISTS snd_cam_ts ON sound_levels(camera_id, ts);
 
+-- Named people (family members), recognised by face.
+CREATE TABLE IF NOT EXISTS people (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    created REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS faces (
+    id INTEGER PRIMARY KEY,
+    detection_id INTEGER,
+    camera_id TEXT,
+    ts REAL,
+    size INTEGER,                               -- face size in px (larger = more reliable)
+    embedding BLOB NOT NULL,                    -- SFace fingerprint, normalised float32
+    path TEXT,                                  -- aligned face picture
+    person_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'unknown',     -- unknown | auto | confirmed | rejected
+    score REAL,                                 -- best similarity to a person
+    rejected TEXT                               -- JSON list of person ids this face is not
+);
+CREATE INDEX IF NOT EXISTS faces_person ON faces(person_id);
+CREATE INDEX IF NOT EXISTS faces_det ON faces(detection_id);
+
 -- Repeat-vehicle tracking: one row per distinct vehicle (matched by plate or appearance).
 CREATE TABLE IF NOT EXISTS vehicles (
     id INTEGER PRIMARY KEY,
@@ -156,7 +178,9 @@ class DB:
             "subtype": "TEXT",                            # breed / species (crow, pomeranian)
             "plate_reads": "INTEGER",                     # frames the plate was read in (recording re-read)
             "plate_agree": "INTEGER",                     # of those, frames that read exactly the final text
-            "subtype_conf": "REAL",                       # certainty of kind/subtype; 0 = looked, kept the label
+            "subtype_conf": "REAL",
+            "who": "TEXT",                                # name of the recognised person (theeye.people)
+            "face_checked": "INTEGER",                    # 1 once looked at for a face                       # certainty of kind/subtype; 0 = looked, kept the label
         },
     }
 

@@ -152,6 +152,7 @@ class Searcher:
         self.cameras = cameras           # id -> name
         self.embedder = embedder
         self.animals = animals           # SubtypeClassifier: the animal / breed / species names it can give
+        self.people = None               # theeye.people.People: names of recognised people
 
     # --------------------------------------------------------------- LLM
     def interpret(self, q: str) -> dict[str, Any]:
@@ -198,6 +199,21 @@ class Searcher:
         elif not TIME_WORDS.search(ql):
             f["start"], f["end"], f["hours"] = "", "", []
         return _apply_certainty(q, f)
+
+    def _apply_people(self, q: str, f: dict) -> None:
+        """A family member's name ("rylan", "rylan yesterday") filters on who was recognised."""
+        if not self.people:
+            return
+        low = " " + re.sub(r"[^a-z0-9 ]+", " ", q.lower()) + " "
+        found = [n for n in self.people.names().values() if re.search(rf"\b{re.escape(n.lower())}('?s)?\b", low)]
+        if not found:
+            return
+        f["people"] = found
+        f["labels"] = [l for l in (f.get("labels") or []) if l != "person"]
+        vis = (f.get("visual") or "").lower()
+        for n in found:
+            vis = re.sub(rf"\b{re.escape(n.lower())}('?s)?\b", " ", vis)
+        f["visual"] = " ".join(vis.split()) if any(w not in STOP and w not in LABEL_WORDS for w in vis.split()) else ""
 
     def _apply_animals(self, q: str, f: dict) -> None:
         """Animal, breed and species names in the question ("squirrel", "crow", "pomeranian") become a filter
@@ -271,6 +287,7 @@ class Searcher:
         t0 = time.time()
         f = self.interpret(q)
         self._apply_animals(q, f)
+        self._apply_people(q, f)
         target = f.get("target") or "detections"
         if cameras is not None:
             picked = [c for c in cameras if c in self.cameras]
@@ -319,6 +336,10 @@ class Searcher:
         if labels:
             where.append(f"COALESCE(kind, label) IN ({','.join('?' * len(labels))})")
             args += labels
+        who = [n.lower() for n in (f.get("people") or [])]
+        if who:
+            where.append(f"LOWER(who) IN ({','.join('?' * len(who))})")
+            args += who
         names = f.get("animals") or []
         if names:
             q = ",".join("?" * len(names))
@@ -393,6 +414,9 @@ class Searcher:
         for l in f.get("labels") or []:
             where.append("labels LIKE ?")
             args.append(f'%"{l}"%')
+        for n in f.get("people") or []:
+            where.append("labels LIKE ?")
+            args.append(f'%"{n}"%')
         names = f.get("animals") or []
         if names:
             where.append("(" + " OR ".join("labels LIKE ?" for _ in names) + ")")

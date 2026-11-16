@@ -71,6 +71,7 @@ class Hub:
                          if cfg.detector.embeddings else None)
         self.animals = SubtypeClassifier(cfg.animals, self.embedder) if self.embedder else None
         self.delivery = DeliveryClassifier(self.embedder, cfg.delivery.min_confidence) if self.embedder else None
+        self.people = None                         # theeye.people.People, set by __main__ (needs the models folder)
         self.plates = PlateRefiner(self)
         self.detector: Optional[Detector] = None
         if cfg.detector.enabled:
@@ -113,6 +114,8 @@ class Hub:
         threading.Thread(target=self._retention, name="retention", daemon=True).start()
         threading.Thread(target=self._animal_backfill, name="animal-backfill", daemon=True).start()
         threading.Thread(target=self._delivery_backfill, name="delivery-backfill", daemon=True).start()
+        if self.people:
+            threading.Thread(target=self.people.scan_past, name="face-scan", daemon=True).start()
         threading.Thread(target=self._repair_interrupted, name="clip-repair", daemon=True).start()
 
     def stop(self) -> None:
@@ -312,6 +315,11 @@ class Hub:
             self._store_animal(t.db_id, t.label, animal)
         for row in self.db.all("SELECT event_id FROM event_links WHERE kind='detection' AND ref_id=?", (t.db_id,)):
             self._event_thumb_from_track(row["event_id"], t)
+        if self.people and self.cfg.people.enabled and t.label == "person":
+            try:
+                self.people.on_track_end(t)
+            except Exception:  # noqa: BLE001
+                log.exception("face recognition failed")
 
     # -------------------------------------------------------------- animals
     def _classify_animal(self, label: str, emb: Optional[bytes]):

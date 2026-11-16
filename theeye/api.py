@@ -428,7 +428,7 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         e = _event_out(e)
         e["motion"] = db.all("SELECT m.* FROM motion_triggers m JOIN event_links l ON l.ref_id=m.id "
                              "AND l.kind='motion' WHERE l.event_id=? ORDER BY m.start_ts", (eid,))
-        dets = db.all("SELECT d.id,d.label,d.kind AS animal,d.subtype,d.subtype_conf,d.confidence,d.first_ts,"
+        dets = db.all("SELECT d.id,d.label,d.kind AS animal,d.subtype,d.subtype_conf,d.who,d.confidence,d.first_ts,"
                       "d.last_ts,d.plate,d.snapshot_path,d.zones "
                       "FROM detections d JOIN event_links l ON l.ref_id=d.id AND l.kind='detection' "
                       "WHERE l.event_id=? ORDER BY d.first_ts", (eid,))
@@ -526,6 +526,60 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         return res
 
     # ------------------------------------------------------------ vehicles
+    # ------------------------------------------------------------ people (face recognition)
+    def people_or_503():
+        if not hub.people:
+            raise HTTPException(503, "face recognition isn't available")
+        return hub.people
+
+    @app.get("/api/people")
+    def people_list():
+        p = people_or_503()
+        out = []
+        for pid, name in sorted(p.names().items(), key=lambda kv: kv[1].lower()):
+            conf = p.confirmed(pid)
+            seen = db.one("SELECT COUNT(*) AS n, MAX(ts) AS last FROM faces WHERE person_id=? AND status IN"
+                          " ('auto','confirmed')", (pid,))
+            out.append({"id": pid, "name": name, "confirmed": conf[:24], "n_confirmed": len(conf),
+                        "n_seen": seen["n"], "last_seen": seen["last"]})
+        return {"people": out, "stats": p.stats, "models": bool(p.engine._load())}
+
+    @app.post("/api/people")
+    def people_add(name: str = Body(..., embed=True)):
+        name = name.strip()
+        if not name or len(name) > 40:
+            raise HTTPException(422, "name must be 1-40 characters")
+        if name.lower() in {n.lower() for n in people_or_503().names().values()}:
+            raise HTTPException(409, "that name is already used")
+        return {"id": people_or_503().add_person(name)}
+
+    @app.delete("/api/people/{pid}")
+    def people_remove(pid: int):
+        people_or_503().remove_person(pid)
+        return {"ok": True}
+
+    @app.get("/api/people/{pid}/suggestions")
+    async def people_suggest(pid: int, limit: int = 60):
+        return await asyncio.to_thread(people_or_503().suggestions, pid, min(limit, 200))
+
+    @app.post("/api/faces/{fid}")
+    def face_verdict(fid: int, person_id: int = Body(..., embed=True), verdict: str = Body(..., embed=True)):
+        """verdict "yes": this face is that person (confirms it); "no": it isn't."""
+        p = people_or_503()
+        try:
+            (p.confirm if verdict == "yes" else p.reject)(fid, person_id)
+        except KeyError:
+            raise HTTPException(404)
+        return {"ok": True}
+
+    @app.post("/api/detections/{det_id}/person")
+    async def detection_person(det_id: int, person_id: int = Body(..., embed=True)):
+        """'This is <person>' from the event player: enrol this detection's face."""
+        fid = await asyncio.to_thread(people_or_503().enrol_detection, det_id, person_id)
+        if not fid:
+            raise HTTPException(422, "no usable face found for this detection (too small, turned away or dark)")
+        return {"face_id": fid}
+
     @app.get("/api/vehicles")
     def vehicles(status: str = "all", limit: int = Query(200, le=2000)):
         where, args = ("", []) if status == "all" else ("WHERE status = ?", [status])
