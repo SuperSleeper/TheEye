@@ -168,6 +168,8 @@ class People:
     def _set_who(self, det_id: int, name: Optional[str], old: Optional[str] = None) -> None:
         """Name a detection (or clear it), and keep its recordings' tags in step."""
         self.db.execute("UPDATE detections SET who=? WHERE id=?", (name, det_id))
+        if name:
+            self.hub.clear_service(det_id)       # family isn't the Amazon driver, whatever the vest
         for r in self.db.all("SELECT event_id FROM event_links WHERE kind='detection' AND ref_id=?", (det_id,)):
             eid = r["event_id"]
             others = {x["who"] for x in self.db.all(

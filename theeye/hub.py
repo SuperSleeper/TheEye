@@ -34,7 +34,7 @@ from .vehicles import VehicleRegistry
 from .rules import CamState, Rule, evaluate, is_loud
 from . import gpu
 from .plates import PlateRefiner
-from .delivery import PERSON_LABELS, VEHICLE_LABELS, DeliveryClassifier
+from .delivery import PERSON_LABELS, SERVICES, VEHICLE_LABELS, DeliveryClassifier
 from .subtypes import ANIMAL_LABELS, SubtypeClassifier
 
 log = logging.getLogger("theeye.hub")
@@ -300,10 +300,11 @@ class Hub:
             " snapshot_path=COALESCE(?, snapshot_path), embedding=COALESCE(?, embedding), moving=? WHERE id=?",
             (t.best_conf, t.last_ts, json.dumps(t.best_bbox), json.dumps(sorted(t.zones)), t.plate,
              t.plate_conf or None, snap, emb, int(t.travelled), t.db_id))
+        vid = None
         if self.vehicles.eligible(t.label, t.best_bbox, t.travelled):
             try:
-                self.vehicles.observe(t.db_id, t.camera_id, t.label, t.first_ts, t.last_ts, emb, t.plate,
-                                      t.plate_conf, snap)
+                vid = self.vehicles.observe(t.db_id, t.camera_id, t.label, t.first_ts, t.last_ts, emb, t.plate,
+                                            t.plate_conf, snap)
             except Exception:  # noqa: BLE001
                 log.exception("vehicle matching failed")
         if t.plate:
@@ -311,6 +312,8 @@ class Hub:
                 for ev in self._events_for(t.camera_id):
                     ev.plates.add(t.plate)
                     self._flush_event_meta(ev)
+        if animal and animal[1] in SERVICES and self.vehicles.is_known(vid):
+            animal = None                  # your own / a neighbour's car (marked Known) is never a delivery or police car
         if emb is not None and (t.label in ANIMAL_LABELS or self._delivery_on(t.label)):
             self._store_animal(t.db_id, t.label, animal)
         for row in self.db.all("SELECT event_id FROM event_links WHERE kind='detection' AND ref_id=?", (t.db_id,)):
@@ -348,6 +351,31 @@ class Hub:
         if r:
             log.info("delivery: %s %s (%.0f%%)", r[0], label, r[1] * 100)
         return (label, r[0], r[1]) if r else None
+
+    def clear_service(self, det_id: int) -> None:
+        """Take a delivery/emergency tag off a detection (a family member, or a car marked Known), and off its
+        recordings unless something else in them has that tag."""
+        r = self.db.one("SELECT subtype FROM detections WHERE id=?", (det_id,))
+        if not r or r["subtype"] not in SERVICES:
+            return
+        tag = r["subtype"]
+        self.db.execute("UPDATE detections SET subtype=NULL, subtype_conf=0 WHERE id=?", (det_id,))
+        for row in self.db.all("SELECT event_id FROM event_links WHERE kind='detection' AND ref_id=?", (det_id,)):
+            eid = row["event_id"]
+            if self.db.one("SELECT 1 FROM event_links l JOIN detections d ON d.id=l.ref_id AND l.kind='detection'"
+                           " WHERE l.event_id=? AND d.subtype=? LIMIT 1", (eid, tag)):
+                continue
+            with self._lock:
+                ev = next((e for e in self._open_events.values() if e.id == eid), None)
+                if ev is not None:
+                    ev.labels.discard(tag)
+                    self._flush_event_meta(ev)
+                    continue
+            e = self.db.one("SELECT labels FROM events WHERE id=?", (eid,))
+            if e:
+                labels = [x for x in jload(e["labels"], []) if x != tag]
+                self.db.execute("UPDATE events SET labels=? WHERE id=?", (json.dumps(labels), eid))
+        log.info("detection %d: %s tag removed (family member or known vehicle)", det_id, tag)
 
     def _delivery_backfill(self) -> None:
         """One pass over people and vehicles recorded before this existed."""

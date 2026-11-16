@@ -136,6 +136,10 @@ class VehicleRegistry:
             self.db.execute("UPDATE vehicles SET status=?, visits=?, note=COALESCE(?, note) WHERE id=?",
                             (status, v.visits, note, vid))
 
+    def is_known(self, vid: Optional[int]) -> bool:
+        v = self._v.get(vid) if vid else None
+        return bool(v and v.status == "known")
+
     def set_plate(self, vid: int, plate: str, conf: float) -> None:
         """A plate read more surely later (theeye.plates), e.g. over the whole recording."""
         if conf < 0.6 or len(plate) < 5:

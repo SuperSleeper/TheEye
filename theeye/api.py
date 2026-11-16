@@ -608,6 +608,9 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
             hub.vehicles.set_status(vid, status, note)
         except KeyError:
             raise HTTPException(404)
+        if status == "known":       # a known car (yours, a neighbour's) loses any delivery/police tags it got
+            for r in db.all("SELECT id FROM detections WHERE vehicle_id=? AND subtype IS NOT NULL", (vid,)):
+                hub.clear_service(r["id"])
         return {"ok": True}
 
     # --------------------------------------------------------------- misc
