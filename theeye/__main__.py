@@ -49,6 +49,11 @@ def main() -> None:
         tls = {"ssl_certfile": str(cert), "ssl_keyfile": str(key)}
     logging.info("web UI on %s://%s:%d", "https" if srv.https else "http",
                  "localhost" if srv.host in ("0.0.0.0", "::") else srv.host, srv.port)
+    if srv.mcp_port:                 # read-only MCP for a local AI assistant (loopback, hook-token guarded)
+        from . import mcp
+        from .auth import AuthStore
+        _store = AuthStore(cfg_path.parent / "auth.json", hub.db)
+        mcp.serve("127.0.0.1", int(srv.mcp_port), hub, searcher, hub.db, _store.hook_token_ok)
     # live-view streams never end on their own; without a timeout, shutdown waits for every open browser tab
     uvicorn.run(app, host=srv.host, port=srv.port, log_level="warning", timeout_graceful_shutdown=3, **tls)
 

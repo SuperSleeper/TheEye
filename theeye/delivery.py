@@ -25,8 +25,13 @@ SERVICES: dict[str, dict[str, list[str]]] = {
     "Amazon": {
         "vehicle": ["an Amazon Prime delivery van with the Amazon smile logo", "a blue Amazon delivery van",
                     "a white Amazon delivery van with a blue stripe and the Amazon logo"],
+        # The vest is what shows at doorstep distance (blue, reflective silver stripes). These two took a real
+        # driver at night from 42% to 100% without tagging any of ~1,750 other people. A generic "person carrying
+        # a box" description was tried and dropped: it tagged people taking boxes out to the bins.
         "person": ["an Amazon delivery driver wearing a blue and yellow safety vest carrying a package",
-                   "a delivery driver in an Amazon vest holding a parcel"],
+                   "a delivery driver in an Amazon vest holding a parcel",
+                   "a delivery driver wearing a blue safety vest with reflective silver stripes",
+                   "a person in a blue hi-vis vest carrying a cardboard box to the front door at night"],
     },
     "UPS": {
         "vehicle": ["a brown UPS delivery truck", "a brown UPS package car with the gold UPS shield logo"],

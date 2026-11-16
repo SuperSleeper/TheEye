@@ -181,6 +181,7 @@ class ServerConfig(BaseModel):
     https: bool = True                 # serve over HTTPS; a self-signed certificate is created if none is given
     cert_file: Optional[str] = None    # your own certificate + key (PEM); relative paths are from the config folder
     key_file: Optional[str] = None
+    mcp_port: Optional[int] = None     # if set, a read-only MCP server for local AI assistants on 127.0.0.1:<port>
 
 
 class AnimalsConfig(BaseModel):
