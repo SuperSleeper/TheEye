@@ -257,3 +257,4 @@ details.card-s > summary.card-h::-webkit-details-marker { display: none; }
 details.card-s > summary.card-h h2::before { content: '▸ '; color: var(--muted, #888); }
 details.card-s[open] > summary.card-h { margin-bottom: 8px; }
 details.card-s[open] > summary.card-h h2::before { content: '▾ '; }
+select.boost { padding: 3px 6px; font-size: 12px; margin-right: 8px; }

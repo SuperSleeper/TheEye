@@ -448,7 +448,7 @@ function openFocus(id) {
   $('#focus-name').textContent = c?.name || id; $('#focus-res').textContent = '';
   $('#focus').classList.remove('hidden');
   lvUpdate();                                           // tiles stop streaming while full-window
-  v.muted = false; updateFocusMute();
+  v.muted = false; updateFocusMute(); boostAudio(v);
   startFocusStream();
   F.timers.push(setInterval(() => {                     // stay at the live edge; hop over small gaps
     const b = v.buffered;
@@ -613,6 +613,48 @@ $('#player').addEventListener('keydown', e => {
     $(e.key === 'ArrowLeft' ? '#pl-prev' : '#pl-next').click();
   }
 });
+// ---- audio boost: the cameras send audio at about -70 dBFS (peaks around -45), far too quiet to hear.
+// Played audio goes through a gain and then a limiter, so loud moments don't distort. "Auto level" (0) measures
+// the sound as it plays and raises it toward a normal listening level, up to x200. Browser-only: clips untouched.
+const AGC = { target: -26, max: 200, floor: -85 };     // dBFS aimed for; most gain; below this it's silence
+const BOOST = { ctx: null, nodes: new Map(), gain: (() => { try { const v = localStorage.getItem('theeye.audioBoost'); return v === null ? 0 : +v; } catch { return 0; } })() };
+function boostAudio(v) {
+  try {
+    BOOST.ctx ||= new (window.AudioContext || window.webkitAudioContext)();
+    if (!BOOST.nodes.has(v)) {                 // an element can only be routed once
+      const ctx = BOOST.ctx, src = ctx.createMediaElementSource(v), g = ctx.createGain(), lim = ctx.createDynamicsCompressor();
+      const meter = ctx.createAnalyser(); meter.fftSize = 2048;
+      lim.threshold.value = -12; lim.knee.value = 6; lim.ratio.value = 20; lim.attack.value = 0.003; lim.release.value = 0.25;
+      src.connect(g).connect(lim).connect(ctx.destination);
+      src.connect(meter);                    // level before the gain, for auto level
+      BOOST.nodes.set(v, g);
+      v.addEventListener('play', () => ctx.resume().catch(() => {}));
+      const buf = new Float32Array(meter.fftSize);
+      let level = -66;                        // slow running level (dB); starts at these cameras' usual level,
+      if (BOOST.gain === 0) g.gain.value = 10 ** ((AGC.target - level) / 20);   // so play/seek is audible at once
+      setInterval(() => {
+        if (BOOST.gain !== 0 || v.paused) return;
+        meter.getFloatTimeDomainData(buf);
+        const db = 10 * Math.log10(buf.reduce((s, x) => s + x * x, 0) / buf.length + 1e-12);
+        if (db > AGC.floor) level = db > level ? level + (db - level) * 0.5 : level + (db - level) * 0.05;
+        const want = Math.min(AGC.max, Math.max(1, 10 ** ((AGC.target - level) / 20)));
+        g.gain.setTargetAtTime(want, ctx.currentTime, want < g.gain.value ? 0.05 : 0.8);   // down fast, up slowly
+      }, 100);
+    }
+    if (BOOST.gain) BOOST.nodes.get(v).gain.value = BOOST.gain;
+    BOOST.ctx.resume().catch(() => {});
+  } catch (e) { console.warn('audio boost unavailable', e); }
+}
+$$('select.boost').forEach(s => {
+  s.value = String(BOOST.gain);
+  s.onchange = () => {
+    BOOST.gain = +s.value;
+    try { localStorage.setItem('theeye.audioBoost', s.value); } catch { /* not kept */ }
+    $$('select.boost').forEach(o => { o.value = s.value; });
+    for (const g of BOOST.nodes.values()) if (BOOST.gain) g.gain.value = BOOST.gain;
+  };
+});
+
 async function openEvent(id, seek) {
   const token = EV.token = {};                            // newest request wins when stepping quickly
   updateEventNav();
@@ -620,6 +662,7 @@ async function openEvent(id, seek) {
   if (EV.token !== token) return;
   $('#pl-title').textContent = `${camName(e.camera_id)} — ${fmtTime(e.start_ts)} — ${e.rule_name || e.source}`;
   const v = $('#pl-video');
+  boostAudio(v);
   if (e.clip_path) {
     v.src = `/media/${e.clip_path}`;
     v.onloadedmetadata = () => { v.currentTime = seek ?? e.play_from ?? e.clip_offset; v.play().catch(() => {}); };
