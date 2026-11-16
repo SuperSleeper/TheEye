@@ -454,6 +454,23 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         cam_or_404(m.camera_id)
         return {"id": hub.manual_event(m.camera_id, m.duration, m.preroll, m.note, "manual")}
 
+    # The AI CPU/GPU header toggle for local programs that need the GPU (e.g. an LLM), with the hook token
+    # instead of a session. Registered before /api/hooks/{cam_id} so it isn't taken for a camera id.
+    @app.get("/api/hooks/ai-device")
+    def hook_ai_device_get():
+        det = hub.detector.stats if hub.detector else {}
+        return {"device": hub.cfg.detector.device, "active": det.get("device"), "infer_ms": det.get("infer_ms")}
+
+    @app.post("/api/hooks/ai-device")
+    def hook_ai_device(device: str = Body(..., embed=True)):
+        if device != "cpu" and not device.startswith("cuda"):
+            raise HTTPException(422, "device must be 'cpu' or 'cuda:N'")
+        if device != hub.cfg.detector.device:
+            hub.set_ai_device(device)
+            save_config(hub.cfg, config_path)
+            configapi.log.info("AI device set to %s by hook", device)
+        return {"device": device}
+
     @app.post("/api/hooks/{cam_id}")
     def hook(cam_id: str, duration: float = 30, preroll: float = 10, body: dict = Body(default={})):
         """External trigger (doorbell, alarm panel, Home Assistant...)."""
