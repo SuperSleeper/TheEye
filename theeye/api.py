@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import auth, configapi
+from .config import save_config
 from .db import jload
 from .hub import LOG_MAX_BYTES, MOTION_KEEP_DAYS, SOUND_KEEP_DAYS, Hub
 from .search import Searcher
