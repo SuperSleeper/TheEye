@@ -135,14 +135,15 @@ function drawOverlay(cv, img, st, camId) {
   }
   ctx.setLineDash([]);
   ctx.font = '12px system-ui';
-  for (const t of OV.ai ? st.tracks : []) {
+  // Parked objects aren't boxed: they're still tracked (and found by search), just not drawn
+  for (const t of OV.ai ? st.tracks.filter(t => !t.parked) : []) {
     const [x1, y1, x2, y2] = t.bbox;
-    // Ignored by rules: parked (grey dashed) or never seen moving (grey dotted)
-    const ignored = t.parked || t.confirmed === false, col = ignored ? '#9aa3ad' : '#ffcc00';
-    ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.setLineDash(t.parked ? [6, 4] : t.confirmed === false ? [2, 3] : []);
+    // Ignored by rules: never seen moving (grey dotted)
+    const ignored = t.confirmed === false, col = ignored ? '#9aa3ad' : '#ffcc00';
+    ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.setLineDash(ignored ? [2, 3] : []);
     ctx.strokeRect(ox + x1 * dw, oy + y1 * dh, (x2 - x1) * dw, (y2 - y1) * dh);
     ctx.setLineDash([]);
-    const tag = t.parked ? ' · parked' : t.confirmed === false ? ` ${(t.conf * 100).toFixed(0)}% · no motion` : ` ${(t.conf * 100).toFixed(0)}%`;
+    const tag = t.confirmed === false ? ` ${(t.conf * 100).toFixed(0)}% · no motion` : ` ${(t.conf * 100).toFixed(0)}%`;
     const label = `${t.label}${tag}${t.plate ? ' ' + t.plate : ''}`;
     ctx.fillStyle = col; ctx.fillRect(ox + x1 * dw, oy + y1 * dh - 16, ctx.measureText(label).width + 8, 16);
     ctx.fillStyle = '#000'; ctx.fillText(label, ox + x1 * dw + 4, oy + y1 * dh - 4);
