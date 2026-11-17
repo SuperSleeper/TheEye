@@ -956,7 +956,7 @@ $('#search-form').onsubmit = async ev => {
     $('#search-results').innerHTML = r.results.map(x => {
       if (x.kind === 'detection') return `
         <div class="card${x.clip_path ? '' : ' noclip'}" data-ev="${x.clip_path ? x.event_id : ''}" data-seek="${x.seek ?? ''}"
-          ${x.clip_path ? '' : 'title="Seen, but nothing was recorded then (no rule records this), or the recording has been deleted"'}>
+          ${x.clip_path ? '' : 'title="Seen, but nothing was recorded then (no rule records this), or the recording has been deleted. Click for the snapshot."'}>
           ${x.snapshot_path ? `<img loading="lazy" src="/media/${esc(x.snapshot_path)}">` : '<img>'}
           <div class="body"><div class="title"><span>${esc(animalName(x))} ${(x.confidence * 100).toFixed(0)}%</span><span class="muted">${x.score != null ? 'look-alike ' + x.score.toFixed(2) : ''}</span></div>
           <div class="muted">${esc(camName(x.camera_id))} · ${fmtTime(x.first_ts)}${x.clip_path ? '' : ' · <b>no recording</b>'}</div>
@@ -972,6 +972,11 @@ $('#search-form').onsubmit = async ev => {
     const playable = $$('#search-results .card[data-ev]').filter(c => c.dataset.ev);
     const list = playable.map(c => ({ id: +c.dataset.ev, seek: c.dataset.seek ? +c.dataset.seek : undefined }));
     playable.forEach((c, i) => c.onclick = () => openFromList(list, i, 'search'));
+    // Nothing recorded: at least show the snapshot full-size
+    $$('#search-results .card.noclip').forEach(c => {
+      const src = c.querySelector('img')?.getAttribute('src');
+      if (src) { c.style.cursor = 'zoom-in'; c.onclick = () => window.open(src, '_blank', 'noopener'); }
+    });
   } catch (e) { $('#search-meta').textContent = 'Search failed: ' + e.message; }
 };
 
