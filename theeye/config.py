@@ -163,8 +163,24 @@ class LLMConfig(BaseModel):
 
 class StorageConfig(BaseModel):
     path: str = "data"
-    max_gb: float = 200.0              # oldest event clips pruned beyond this
+    max_gb: float = 200.0              # "max useable": oldest event clips pruned beyond this
     ram_budget_gb: float = 16.0        # hard cap across all ring buffers
+    # Each camera's share of max_gb, in percent (camera id -> %). Cameras not listed split what's left equally.
+    # A camera's oldest clips are deleted once it's past its share.
+    camera_share: dict[str, float] = Field(default_factory=dict)
+
+    def clip_quotas(self, cam_ids: list[str]) -> dict[str, float]:
+        """Bytes of clips each camera may keep. Set shares adding up to more than 100% are scaled down to fit."""
+        limit = self.max_gb * 1e9
+        set_ = {c: max(0.0, float(self.camera_share[c])) for c in cam_ids
+                if self.camera_share.get(c) is not None}
+        total = sum(set_.values())
+        if total > 100:
+            set_ = {c: v * 100 / total for c, v in set_.items()}
+            total = 100.0
+        rest = [c for c in cam_ids if c not in set_]
+        each = (100 - total) / len(rest) if rest else 0.0
+        return {c: limit * (set_[c] if c in set_ else each) / 100 for c in cam_ids}
 
 
 class VehiclesConfig(BaseModel):

@@ -1336,7 +1336,7 @@ function renderSetup() {
   $$('#cfg-classes input').forEach(cb => cb.onchange = () => {
     S.cfg.detector.classes = $$('#cfg-classes input:checked').map(x => x.value); markDirty();
   });
-  showVals(); renderCreds(); renderCams(); markDirty();
+  showVals(); renderCreds(); renderCams(); renderStorage(); markDirty();
 }
 function showVals() { $$('#tab-setup [data-show]').forEach(s => s.textContent = (+getK(S.cfg, s.dataset.show)).toFixed(2)); }
 
@@ -1592,34 +1592,66 @@ function renderRam() {
 }
 
 // ---- disk usage per camera (Setup → Storage)
+let STOR = null;                                         // last measurement, re-drawn when settings change
 async function loadStorage(refresh = false) {
   const box = $('#cfg-storage');
   box.innerHTML = '<p class="muted small">Measuring…</p>';
-  let r;
-  try { r = await api(`/api/storage${refresh ? '?refresh=1' : ''}`); }
+  try { STOR = await api(`/api/storage${refresh ? '?refresh=1' : ''}`); }
   catch (e) { box.innerHTML = `<p class="warn small">Couldn't measure storage: ${esc(e.message)}</p>`; return; }
+  renderStorage();
+}
+// Each camera's share of "max useable" (storage.camera_share, %); blank ones split what's left equally.
+// Same rule as StorageConfig.clip_quotas on the server.
+function clipShares() {
+  const st = S.cfg?.storage || {}, set = st.camera_share || {};
+  const ids = (S.cfg?.cameras || []).map(c => c.id);
+  const given = ids.filter(id => set[id] != null && set[id] !== '');
+  let sum = given.reduce((a, id) => a + Math.max(0, +set[id]), 0);
+  const scale = sum > 100 ? 100 / sum : 1;
+  const rest = ids.length - given.length, each = rest ? Math.max(0, 100 - Math.min(sum, 100)) / rest : 0;
+  const pct = Object.fromEntries(ids.map(id => [id, given.includes(id) ? Math.max(0, +set[id]) * scale : each]));
+  return { pct, given: new Set(given), sum, each, rest, limit: (+st.max_gb || 0) * 1e9 };
+}
+function renderStorage() {
+  const r = STOR, box = $('#cfg-storage');
+  if (!r || !S.cfg) return;
+  const sh = clipShares();
   const max = Math.max(1, ...r.cameras.map(c => c.total_bytes));
   const days = t => t ? `${Math.max(0, (Date.now() / 1000 - t) / 86400).toFixed(1)} days` : '—';
-  const lim = r.clip_limit_bytes, used = r.clips_bytes;
+  const lim = sh.limit || r.clip_limit_bytes, used = r.clips_bytes;
+  const share = c => {
+    if (!c.configured) return '<td class="num muted">—</td>';
+    const q = lim * sh.pct[c.id] / 100, over = c.clips_bytes > q;
+    const v = S.cfg.storage.camera_share?.[c.id];
+    return `<td class="num share"><input type="number" min="0" max="100" step="1" data-share="${esc(c.id)}"
+        value="${v ?? ''}" placeholder="${sh.pct[c.id].toFixed(0)}" title="Percent of max useable for this camera's clips. Blank: an equal part of what the others leave.">%
+      <div class="small ${over ? 'warn' : 'muted'}" title="${over ? 'Over its share: its oldest clips are deleted at the next cleanup (every 5 minutes)' : ''}">
+        ${v == null || v === '' ? 'auto · ' : ''}${fmtBytes(q)}${over ? ' · over' : ''}</div></td>`;
+  };
   const n = v => Number(v).toLocaleString();
   box.innerHTML = `
     <div class="sub-h">Per camera</div>
     <div class="tscroll"><table class="table stor">
-      <thead><tr><th>Camera</th><th class="num">Clips</th><th class="num">Snapshots</th><th class="num">Total</th><th></th><th class="num">Oldest clip</th><th class="num">RAM loop now</th></tr></thead>
+      <thead><tr><th>Camera</th><th class="num">Clips</th><th class="num">Snapshots</th><th class="num">Total</th><th></th><th class="num" title="Share of max useable for this camera's clips">Share of max</th><th class="num">Oldest clip</th><th class="num">RAM loop now</th></tr></thead>
       <tbody>${r.cameras.map(c => `<tr>
-        <td>${esc(c.name)}${c.configured ? '' : ' <span class="badge">removed</span>'}</td>
+        <td>${esc(c.name)}${c.configured || c.special ? '' : ' <span class="badge">removed</span>'}</td>
         <td class="num">${fmtBytes(c.clips_bytes)} <span class="muted">· ${c.clips}</span></td>
         <td class="num">${fmtBytes(c.snaps_bytes)} <span class="muted">· ${c.snaps}</span></td>
         <td class="num"><b>${fmtBytes(c.total_bytes)}</b></td>
         <td class="bar"><i style="width:${(c.total_bytes / max * 100).toFixed(1)}%"></i></td>
+        ${share(c)}
         <td class="num">${days(c.oldest_clip)}</td>
         <td class="num">${c.ram_bytes ? fmtBytes(c.ram_bytes) : '—'}</td></tr>`).join('')}
-        <tr class="muted"><td>Database</td><td></td><td></td><td class="num">${fmtBytes(r.database_bytes)}</td><td></td><td></td><td></td></tr>
+        <tr class="muted"><td>Database</td><td></td><td></td><td class="num">${fmtBytes(r.database_bytes)}</td><td></td><td></td><td></td><td></td></tr>
       </tbody>
       <tfoot><tr><th>Total</th><th class="num">${fmtBytes(r.clips_bytes)}</th><th class="num">${fmtBytes(r.cameras.reduce((a, c) => a + c.snaps_bytes, 0))}</th>
-        <th class="num">${fmtBytes(r.total_bytes)}</th><th></th><th></th><th class="num">${fmtBytes(r.cameras.reduce((a, c) => a + c.ram_bytes, 0))}</th></tr></tfoot>
+        <th class="num">${fmtBytes(r.total_bytes)}</th><th></th>
+        <th class="num ${sh.sum > 100 ? 'warn' : ''}" title="${sh.sum > 100 ? 'The shares you set add up to more than 100%: they are scaled down to fit' : ''}">${sh.given.size ? `${Math.round(sh.sum)}% set` : 'all auto'}${sh.rest && sh.given.size ? ` · ${sh.each.toFixed(0)}% each for ${sh.rest} auto` : ''}${sh.sum > 100 ? ' (over 100%: scaled down)' : ''}</th>
+        <th></th><th class="num">${fmtBytes(r.cameras.reduce((a, c) => a + c.ram_bytes, 0))}</th></tr></tfoot>
     </table></div>
-    <div class="rambar" style="margin-top:14px" title="Clips vs the clip limit"><span style="width:${Math.min(100, used / lim * 100).toFixed(1)}%;background:${used > lim * 0.9 ? '#ffd60a' : 'var(--accent)'}"></span></div>
+    <div class="row maxuse" style="margin-top:14px"><div class="rambar" title="Clips vs max useable"><span style="width:${Math.min(100, used / lim * 100).toFixed(1)}%;background:${used > lim * 0.9 ? '#ffd60a' : 'var(--accent)'}"></span></div>
+      <label class="small" title="Clips can use up to this much disk; past it (or past a camera's share) the oldest clips are deleted to make room">Max useable
+        <input type="number" min="1" step="1" id="stor-max" value="${S.cfg.storage.max_gb}"> GB</label></div>
     <div class="small">Clips use <b>${fmtBytes(used)}</b> of the ${fmtBytes(lim)} limit${used > lim * 0.9 ? ' <span class="warn">— nearly full: oldest clips are being deleted</span>' : ''}
       · everything in the data folder <b>${fmtBytes(r.total_bytes)}</b> · disk free ${fmtBytes(r.disk_free)} of ${fmtBytes(r.disk_total)}</div>
     <div class="sub-h">What grows, and what keeps it in check</div>
@@ -1642,9 +1674,28 @@ async function loadStorage(refresh = false) {
       </tbody>
     </table></div>
     <p class="small muted">Measured ${fmtTime(r.time)} in <code>${esc(r.path)}</code>. "Oldest clip" is how far back recordings go for that camera.
+      "Share of max" is the part of max useable a camera's clips may fill before its own oldest clips are deleted; blank shares split what's left equally. Save configuration to apply.
       Snapshots don't count toward the clip limit, but are cleaned up along with the clips. Cleanup runs every 5 minutes.</p>`;
 }
 $('#cfg-storage-refresh').onclick = () => loadStorage(true);
+// Edits re-draw the table (quotas, totals) and mark the settings unsaved; focus stays in the field being typed in.
+$('#cfg-storage').addEventListener('change', e => {
+  const el = e.target;
+  if (el.id === 'stor-max') {
+    if (+el.value >= 1) S.cfg.storage.max_gb = +el.value;
+  } else if (el.dataset.share) {
+    const m = { ...(S.cfg.storage.camera_share || {}) };
+    if (el.value === '') delete m[el.dataset.share]; else m[el.dataset.share] = Math.min(100, Math.max(0, +el.value));
+    S.cfg.storage.camera_share = m;
+  } else return;
+  markDirty();
+  setTimeout(() => {                       // after focus has moved on (Tab), so it can be put back there
+    const a = document.activeElement, key = a?.id === 'stor-max' ? '#stor-max'
+      : a?.dataset?.share ? `#cfg-storage [data-share="${CSS.escape(a.dataset.share)}"]` : null;
+    renderStorage();
+    if (key) $(key)?.focus();
+  });
+});
 
 // ------------------------------------------------------------ account (sign-in)
 const errText = e => { const m = String(e.message).match(/^\d+ (.*)$/s); try { return JSON.parse(m[1]).detail; } catch { return e.message; } };

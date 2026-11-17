@@ -307,3 +307,10 @@ select.who { font-size: 12px; padding: 1px 4px; margin-left: 4px; }
 #tab-setup.only-storage .setup > .card-s:not(#card-storage), #tab-setup.only-storage .setup > details,
 #tab-setup.only-storage #cfg-path { display: none; }
 html:has(dialog#player[open]) { overflow: hidden; }   /* no page scrollbar beside the full-window player */
+/* Storage & Memory: max useable beside the total bar; each camera's share of it */
+.maxuse { gap: 12px; align-items: center; flex-wrap: nowrap; }
+.maxuse .rambar { flex: 1; margin: 0; }
+.maxuse label { display: flex; align-items: center; gap: 6px; white-space: nowrap; font-weight: 600; }
+.maxuse input { width: 90px; }
+.stor td.share input { width: 64px; text-align: right; }
+.stor td.share .small { white-space: nowrap; }

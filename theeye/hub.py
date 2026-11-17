@@ -739,21 +739,35 @@ class Hub:
                 log.warning("low disk space: %.1f GB free", free / 1e9)
 
     def _prune_clips(self) -> None:
-        """Delete the oldest clips (all cameras together) until clips fit in storage.max_gb."""
-        limit = self.cfg.storage.max_gb * 1e9
-        files = sorted((p for p in (self.data / "clips").rglob("*.mp4")), key=lambda p: p.stat().st_mtime)
-        total = sum(p.stat().st_size for p in files)
+        """Delete each camera's oldest clips once it's past its share of storage.max_gb (camera_share; cameras
+        without one split the rest equally), then the oldest overall if clips still exceed max_gb (e.g. from
+        cameras since removed)."""
+        clips = self.data / "clips"
+        files = sorted(((p, p.stat()) for p in clips.rglob("*.mp4")), key=lambda x: x[1].st_mtime)
         active = {w["path"] for w in self.rec.active().values()}
-        for p in files:
-            if total <= limit:
-                break
+        cam_of = lambda p: p.relative_to(clips).parts[0]          # noqa: E731  clips/<camera>/<day>/<file>
+        quotas = self.cfg.storage.clip_quotas([c.id for c in self.cfg.cameras])
+        used: dict[str, int] = {}
+        for p, st in files:
+            used[cam_of(p)] = used.get(cam_of(p), 0) + st.st_size
+        total = sum(used.values())
+        n = 0
+        for p, st in files:
+            cam = cam_of(p)
+            over_cam = cam in quotas and used[cam] > quotas[cam]
+            if not over_cam and total <= self.cfg.storage.max_gb * 1e9:
+                continue
             rel = str(p.relative_to(self.data))
             if rel in active:
                 continue
-            total -= p.stat().st_size
             p.unlink(missing_ok=True)
+            used[cam] -= st.st_size
+            total -= st.st_size
             self.db.execute("UPDATE events SET clip_path=NULL WHERE clip_path=?", (rel,))
-            log.info("retention: deleted %s", rel)
+            n += 1
+            log.info("retention: deleted %s (%s)", rel, "camera over its share" if over_cam else "over max useable")
+        if n:
+            log.info("retention: deleted %d clips", n)
 
     def _prune_snapshots(self) -> None:
         """Keep pictures only as far back as video goes (the oldest event that still has its clip).

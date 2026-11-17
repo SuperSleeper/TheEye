@@ -51,10 +51,14 @@ def _storage_scan(data: Path, hub: Hub, install: Path) -> dict:
         clips, nclips, oldest = _du(data / "clips" / cid)
         snaps, nsnaps, oldest_snap = _du(data / "snaps" / cid)
         cam = hub.cams.get(cid)
-        cams.append({"id": cid, "name": names.get(cid, cid), "configured": cid in names,
+        cams.append({"id": cid, "name": names.get(cid, "Face pictures (People)" if cid == "faces" else cid),
+                     "configured": cid in names, "special": cid == "faces" and cid not in names,
                      "clips_bytes": clips, "clips": nclips, "oldest_clip": oldest,
                      "snaps_bytes": snaps, "snaps": nsnaps, "oldest_snap": oldest_snap, "total_bytes": clips + snaps,
                      "ram_bytes": cam.ring.stats["bytes"] if cam else 0})
+    quotas = hub.cfg.storage.clip_quotas([c.id for c in hub.cfg.cameras])
+    for r in cams:
+        r["quota_bytes"] = quotas.get(r["id"])
     cams.sort(key=lambda r: -r["total_bytes"])
     db_bytes = sum(p.stat().st_size for p in data.glob("theeye.db*") if p.is_file())
     files = sum(r["total_bytes"] for r in cams)
