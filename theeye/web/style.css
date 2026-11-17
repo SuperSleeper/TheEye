@@ -292,3 +292,5 @@ select.who { font-size: 12px; padding: 1px 4px; margin-left: 4px; }
 .pl-stage.zoomed #pl-video { cursor: grab; touch-action: none; }
 .pl-stage.zoomed #pl-video:active { cursor: grabbing; }
 #pl-video { touch-action: pan-y; }
+#search-results .card[data-ev=""], #search-results .card.noclip { opacity: .55; cursor: default; }
+#search-results .card[data-ev]:not([data-ev=""]) { cursor: pointer; }

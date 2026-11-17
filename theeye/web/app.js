@@ -943,13 +943,14 @@ $('#search-form').onsubmit = async ev => {
     $('#search-meta').innerHTML = `${esc(f.explanation || '')} — <code>${esc(r.target)}: ${esc(parts.join(' · ') || 'everything')}</code> · ${r.results.length} results · ${r.ms} ms`;
     $('#search-results').innerHTML = r.results.map(x => {
       if (x.kind === 'detection') return `
-        <div class="card" data-ev="${x.event_id || ''}" data-seek="${x.seek ?? ''}">
+        <div class="card${x.clip_path ? '' : ' noclip'}" data-ev="${x.clip_path ? x.event_id : ''}" data-seek="${x.seek ?? ''}"
+          ${x.clip_path ? '' : 'title="Seen, but nothing was recorded then (no rule records this), or the recording has been deleted"'}>
           ${x.snapshot_path ? `<img loading="lazy" src="/media/${esc(x.snapshot_path)}">` : '<img>'}
           <div class="body"><div class="title"><span>${esc(animalName(x))} ${(x.confidence * 100).toFixed(0)}%</span><span class="muted">${x.score != null ? 'look-alike ' + x.score.toFixed(2) : ''}</span></div>
-          <div class="muted">${esc(camName(x.camera_id))} · ${fmtTime(x.first_ts)}${x.event_id ? '' : ' · no clip'}</div>
+          <div class="muted">${esc(camName(x.camera_id))} · ${fmtTime(x.first_ts)}${x.clip_path ? '' : ' · <b>no recording</b>'}</div>
           <div class="chips">${tagChips(x.tags, x.subtype || x.animal || x.label)}${x.plate ? `<span class="chip plate">${esc(x.plate)}</span>` : ''}</div></div></div>`;
       if (x.kind === 'event') return `
-        <div class="card" data-ev="${x.id}">${x.snapshot_path ? `<img loading="lazy" src="/media/${esc(x.snapshot_path)}">` : '<img>'}
+        <div class="card${x.clip_path ? '' : ' noclip'}" data-ev="${x.clip_path ? x.id : ''}">${x.snapshot_path ? `<img loading="lazy" src="/media/${esc(x.snapshot_path)}">` : '<img>'}
           <div class="body"><div class="title"><span>Event #${x.id}</span></div><div class="muted">${esc(camName(x.camera_id))} · ${fmtTime(x.start_ts)}</div>
           <div class="chips">${x.tags?.length ? tagChips(x.tags) : x.labels.map(l => `<span class="chip">${esc(l)}</span>`).join('')}${x.plates.map(p => `<span class="chip plate">${esc(p)}</span>`).join('')}</div></div></div>`;
       return `<div class="card"><div class="body"><div class="title">Motion · ${esc(camName(x.camera_id))}</div>

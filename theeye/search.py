@@ -153,6 +153,8 @@ def _parse_when(v: str) -> Optional[float]:
             return None
 
 
+NO_CLIP_MAX = 12          # sightings with nothing to play, shown after the playable results
+
 class Searcher:
     def __init__(self, cfg: LLMConfig, db: DB, cameras: dict[str, str], embedder=None, animals=None):
         self.cfg = cfg
@@ -366,8 +368,11 @@ class Searcher:
         visual = (f.get("visual") or "").strip()
         limit = max(1, min(int(f.get("limit") or 50), 500))
         pool = 5000 if visual else limit * 4
+        # Sightings in a recording first: most parked cars and pets never start one, and 50 of those would
+        # crowd out everything you can actually play.
+        order = "first_ts DESC" if visual else "(event_id IS NULL), first_ts DESC"
         rows = self.db.all(f"SELECT * FROM detections WHERE {' AND '.join(where)} "
-                           f"ORDER BY first_ts DESC LIMIT {pool}", args)
+                           f"ORDER BY {order} LIMIT {pool}", args)
         hours = set(f.get("hours") or [])
         if hours:
             rows = [r for r in rows if dt.datetime.fromtimestamp(r["first_ts"]).hour in hours]
@@ -392,22 +397,39 @@ class Searcher:
             except Exception:  # noqa: BLE001
                 log.exception("visual rerank failed")
         # One card per recording: the best-ranked matching object represents it (thumbnail, seek point),
-        # and the card lists every kind of object found in that recording with its certainty.
-        out, seen_events = [], set()
+        # and the card lists every kind of object found in that recording with its certainty. Sightings with no
+        # recording of their own play from another one on that camera covering the moment, if there is one;
+        # those with nothing to play come after the rest (a few, so you still see the object was there).
+        out, unplayable, seen_events = [], [], set()
+        own_tags = set()
         for r in rows:
             if len(out) >= limit:
                 break
-            if r["event_id"]:
-                if r["event_id"] in seen_events:
-                    continue
-                seen_events.add(r["event_id"])
+            if not r["event_id"] and len(unplayable) < NO_CLIP_MAX:
+                cover = self.db.one(
+                    "SELECT id FROM events WHERE camera_id=? AND clip_path IS NOT NULL AND start_ts <= ? + 300"
+                    " AND start_ts - clip_offset <= ? AND COALESCE(end_ts, start_ts) + 5 >= ?"
+                    " ORDER BY start_ts DESC LIMIT 1", (r["camera_id"], r["first_ts"], r["first_ts"], r["first_ts"]))
+                if cover:
+                    r["event_id"] = cover["id"]
+                    own_tags.add(r["id"])
+            if not r["event_id"]:
+                if len(unplayable) < NO_CLIP_MAX:
+                    unplayable.append(r)
+                continue
+            if r["event_id"] in seen_events:
+                continue
+            seen_events.add(r["event_id"])
+            out.append(r)
+        out += unplayable[:max(0, limit - len(out))]
+        for r in out:
             r.pop("embedding", None)
             r["bbox"] = jload(r["bbox"], [])
             r["zones"] = jload(r["zones"], [])
             r["animal"] = r.pop("kind", None)       # the column; "kind" below is the result type
             r["kind"] = "detection"
-            r["tags"] = self._event_tags(r["event_id"]) if r["event_id"] else [{"label": r["label"], "conf": r["confidence"]}]
-            out.append(r)
+            r["tags"] = (self._event_tags(r["event_id"]) if r["event_id"] and r["id"] not in own_tags
+                         else [{"label": r["subtype"] or r["animal"] or r["label"], "conf": r["confidence"]}])
         return out
 
     def _event_tags(self, eid: int) -> list[dict]:
