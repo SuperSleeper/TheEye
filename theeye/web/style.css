@@ -110,9 +110,17 @@ fieldset { border: 1px solid var(--line); border-radius: 6px; } legend { color: 
 .cond .labels label { flex-direction: row; gap: 3px; color: var(--text); }
 #rl-conds { display: flex; flex-direction: column; gap: 6px; }
 
-dialog#player { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px;
-  width: min(1100px, 95vw); padding: 0; }
+/* The player fills the whole window (nothing behind it shows); the video takes all the room the header and the
+   details strip leave, scaled to fit. */
+dialog#player { background: #000; color: var(--text); border: 0; border-radius: 0; padding: 0; margin: 0;
+  width: 100vw; height: 100vh; height: 100dvh; max-width: none; max-height: none; }
+dialog#player[open] { display: flex; flex-direction: column; }
+dialog#player::backdrop { background: #000; }
 dialog::backdrop { background: rgba(0,0,0,.7); }
+dialog#player .player-head { background: var(--panel); flex: none; }
+dialog#player .pl-stage { flex: 1 1 auto; min-height: 0; }
+dialog#player #pl-video { width: 100%; height: 100%; max-height: none; object-fit: contain; }
+dialog#player #pl-info { flex: none; background: var(--panel); max-height: 22vh; }
 .player-head { display: flex; justify-content: space-between; padding: 8px 12px; }
 #pl-video { width: 100%; background: #000; max-height: 70vh; display: block; }
 #pl-info { padding: 10px 12px; font-size: 12px; max-height: 25vh; overflow: auto; }
@@ -294,3 +302,8 @@ select.who { font-size: 12px; padding: 1px 4px; margin-left: 4px; }
 #pl-video { touch-action: pan-y; }
 #search-results .card[data-ev=""], #search-results .card.noclip { opacity: .55; cursor: default; }
 #search-results .card[data-ev]:not([data-ev=""]) { cursor: pointer; }
+/* Settings vs Storage & Memory: two menu pages over one settings form */
+#tab-setup:not(.only-storage) #card-storage { display: none; }
+#tab-setup.only-storage .setup > .card-s:not(#card-storage), #tab-setup.only-storage .setup > details,
+#tab-setup.only-storage #cfg-path { display: none; }
+html:has(dialog#player[open]) { overflow: hidden; }   /* no page scrollbar beside the full-window player */

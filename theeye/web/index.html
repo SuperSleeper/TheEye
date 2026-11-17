@@ -17,7 +17,8 @@
     <div class="menu">
       <button type="button" id="settings-btn" aria-haspopup="menu" aria-expanded="false">⚙ <span id="settings-label">Settings</span> ▾</button>
       <div id="settings-list" class="menu-list" role="menu" hidden>
-        <button data-tab="setup" role="menuitem">Setup</button>
+        <button data-tab="setup" role="menuitem">Settings</button>
+        <button data-tab="storage" role="menuitem">Storage &amp; Memory</button>
         <button data-tab="rules" role="menuitem">Rules</button>
         <button data-tab="zones" role="menuitem">Zones</button>
         <button data-tab="triggers" role="menuitem">Motion log</button>
@@ -198,8 +199,8 @@
     <div class="setup">
       <div id="cfg-banner"></div>
 
-      <div class="card-s">
-        <div class="card-h"><h2>Storage &amp; memory</h2></div>
+      <div class="card-s" id="card-storage">
+        <div class="card-h"><h2>Storage &amp; Memory</h2></div>
         <div class="fgrid">
           <label>Data folder <input data-k="storage.path"><span class="small muted">clips, snapshots, database (restart to apply)</span></label>
           <label>Max disk for clips (GB) <input type="number" min="1" step="1" data-k="storage.max_gb" data-num>
@@ -320,7 +321,7 @@
       <details class="card-s" id="acct-card">
         <summary class="card-h"><h2>Sign-in</h2><span class="muted small">Signed in as <b id="acct-user"></b></span></summary>
         <!-- The password form only exists while this card is open, so password managers don't autofill it
-             (or the camera logins) while you're editing the rest of Setup. -->
+             (or the camera logins) while you're editing the rest of Settings. -->
         <div id="acct-pw-slot"></div>
         <template id="acct-pw-tpl">
         <form id="acct-pw-form" class="fgrid" autocomplete="on">

@@ -31,12 +31,15 @@ function showTab(name) {
   $('#settings-btn').classList.toggle('active', !!inSettings);
   $('#settings-label').textContent = inSettings ? inSettings.textContent : 'Settings';
   closeSettingsMenu();
-  $$('.tab').forEach(s => s.classList.toggle('active', s.id === `tab-${name}`));
+  // Storage & Memory is its own menu page but part of the same settings form (one Save, one config).
+  const section = name === 'storage' ? 'setup' : name;
+  $$('.tab').forEach(s => s.classList.toggle('active', s.id === `tab-${section}`));
+  $('#tab-setup').classList.toggle('only-storage', name === 'storage');
   Object.values(timers).forEach(clearInterval);
   for (const k in timers) delete timers[k];
   if (name !== 'live') { $('#live-grid').innerHTML = ''; closeFocus?.(); }
   queueMicrotask(() => lvUpdate());
-  ({ live: initLive, events: loadEvents, triggers: loadTriggers, zones: initZones, rules: initRules, setup: () => initSetup(), search: () => { renderSearchCams(); $('#search-q').focus(); }, vehicles: loadVehicles, people: loadPeople })[name]?.();
+  ({ live: initLive, events: loadEvents, triggers: loadTriggers, zones: initZones, rules: initRules, setup: () => initSetup(), storage: () => initSetup(), search: () => { renderSearchCams(); $('#search-q').focus(); }, vehicles: loadVehicles, people: loadPeople })[name]?.();
   location.hash = name;
   $('#overlay-toggles').hidden = name !== 'live';       // overlays only exist on Live
 }
@@ -50,7 +53,7 @@ $('#stats').addEventListener('click', async e => {
   try { await api('/api/ai-device', { method: 'POST', body: { device: to } }); } catch (err) { b.textContent = 'AI switch failed'; console.error(err); }
   setTimeout(loadStats, 1500);
 });
-// Settings menu: Setup, Rules, Zones, Motion log and Sign out, out of the way of the everyday tabs.
+// Settings menu: Settings, Storage & Memory, Rules, Zones, Motion log, People and Sign out, out of the way of the everyday tabs.
 function closeSettingsMenu() { $('#settings-list').hidden = true; $('#settings-btn').setAttribute('aria-expanded', 'false'); }
 $('#settings-btn').onclick = e => {
   e.stopPropagation();
@@ -152,10 +155,10 @@ function initLive() {
         <div class="bar-top"><span class="grip" title="Drag to reorder">⠿</span><span class="name" title="${esc(c.name)}">${esc(c.name)}</span>
           <span class="badge st"></span><span class="badge recb hidden rec">REC</span>
           <button class="recnow" title="Record the next 30 seconds">● Record 30s</button>
-          <button class="cfg" title="Edit this camera in Setup">⚙</button></div>
+          <button class="cfg" title="Edit this camera in Settings">⚙</button></div>
         <div class="bar-sub"><span class="ring"></span><span class="lat hidden"></span>
           <span class="snd hidden" title="Sound level right now (dBFS)"><i><b></b></i><span></span></span></div></div>
-    </div>`).join('') : '<p class="muted">No cameras configured — add them on the Setup tab.</p>';
+    </div>`).join('') : '<p class="muted">No cameras configured — add them in ⚙ Settings.</p>';
   lvReset(grid);
   $$('.tile', grid).forEach(tile => {
     $('.cfg', tile).onclick = () => editCamera(tile.dataset.cam);
@@ -592,7 +595,7 @@ function updateFocusMute() {
 
 function friendlyCamError(err, state) {
   if (!err) return state === 'init' ? 'Connecting…' : 'No video yet';
-  if (/401|unauthori[sz]ed|authoriz/i.test(err)) return 'Login failed — check this camera\'s username/password (⚙ → Setup)';
+  if (/401|unauthori[sz]ed|authoriz/i.test(err)) return 'Login failed — check this camera\'s username/password (⚙ → Settings)';
   if (/refused/i.test(err)) return 'Camera refused the connection — is RTSP enabled on it, and the port right?';
   if (/timed? ?out|unreachable|no route/i.test(err)) return 'Can\'t reach the camera — check its IP address and that it is online';
   if (/404|not found/i.test(err)) return 'Stream path not found — check the brand/model setting';
