@@ -1938,7 +1938,7 @@ async function loadPets() {
   $$('#pets-list .cf-x').forEach(b => b.onclick = async () => {
     const cf = b.closest('.cf'), pid = +b.closest('.person').dataset.pid;
     b.disabled = true;
-    try { await api(`/api/pet_looks/${cf.dataset.fid}`, { method: 'POST', body: { pet_id: pid, verdict: 'no' } }); cf.hidden = true; setTimeout(loadPets, 1500); }
+    try { await api(`/api/pet_looks/${cf.dataset.fid}`, { method: 'POST', body: { pet_id: pid, verdict: 'no' } }); cf.remove(); petsReloadSoon(); }
     catch (err) { b.disabled = false; alertInline(b, 'Failed: ' + err.message); }
   });
   bindFaceClicks($('#pets-list'));
@@ -1958,11 +1958,22 @@ async function loadPetSuggestions(p) {
   bindFaceClicks(box);
   $$('.sg button', box).forEach(b => b.onclick = async () => {
     const sg = b.closest('.sg');
-    await api(`/api/pet_looks/${sg.dataset.fid}`, { method: 'POST', body: { pet_id: p.id, verdict: b.dataset.v } });
-    sg.hidden = true;
-    if (b.dataset.v === 'yes' && p.n_confirmed === 0) setTimeout(loadPets, 1500);    // first example: suggestions change
+    $$('button', sg).forEach(x => x.disabled = true);
+    try { await api(`/api/pet_looks/${sg.dataset.fid}`, { method: 'POST', body: { pet_id: p.id, verdict: b.dataset.v } }); }
+    catch (err) { $$('button', sg).forEach(x => x.disabled = false); alertInline(b, 'Failed: ' + err.message); return; }
+    if (b.dataset.v === 'yes') {          // move the picture up into the pet's confirmed row right away
+      const row = $(`#pets-list .person[data-pid="${p.id}"] .faces`);
+      $('span.muted', row)?.remove();
+      row.insertAdjacentHTML('afterbegin', `<span class="cf" data-fid="${sg.dataset.fid}"></span>`);
+      row.firstElementChild.append($('img', sg));
+    }
+    sg.remove();
+    petsReloadSoon();      // counts, and suggestions re-matched against the new example (runs in the background)
   });
 }
+// Redraw once the clicking stops, so the list doesn't jump around under the mouse.
+let petsReloadTimer;
+function petsReloadSoon() { clearTimeout(petsReloadTimer); petsReloadTimer = setTimeout(loadPets, 4000); }
 $('#pets-add').onsubmit = async ev => {
   ev.preventDefault();
   const f = ev.target;
