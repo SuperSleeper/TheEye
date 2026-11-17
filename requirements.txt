@@ -6,6 +6,7 @@ fast-alpr
 onnxruntime-gpu
 open_clip_torch
 torch
+ai-edge-litert             # YAMNet sound classifier (loud exhaust)
 fastapi
 uvicorn[standard]
 pydantic

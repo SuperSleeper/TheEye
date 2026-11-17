@@ -590,13 +590,16 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
     @app.get("/api/vehicles")
     def vehicles(status: str = "all", limit: int = Query(200, le=2000)):
         where, args = ("", []) if status == "all" else ("WHERE status = ?", [status])
-        rows = db.all(f"SELECT id, grp, label, plate, sightings, visits, first_ts, last_ts, cameras, snapshot_path,"
-                      f" status, flagged_ts, note FROM vehicles {where}"
-                      f" ORDER BY status = 'flagged' DESC, visits DESC, last_ts DESC LIMIT ?", args + [limit])
+        rows = db.all(f"SELECT id, grp, label, plate, sightings, visits, exhausts, first_ts, last_ts, cameras,"
+                      f" snapshot_path, status, flagged_ts, note FROM vehicles {where}"
+                      f" ORDER BY status = 'flagged' DESC, exhausts DESC, visits DESC, last_ts DESC LIMIT ?",
+                      args + [limit])
         for r in rows:
             r["cameras"] = jload(r["cameras"], [])
         counts = {r["status"]: r["n"] for r in db.all("SELECT status, COUNT(*) AS n FROM vehicles GROUP BY status")}
-        return {"vehicles": rows, "counts": counts, "repeat_visits": hub.cfg.vehicles.repeat_visits}
+        vc = hub.cfg.vehicles
+        return {"vehicles": rows, "counts": counts, "repeat_visits": vc.repeat_visits, "flag_by": vc.flag_by,
+                "exhaust_visits": vc.exhaust_visits}
 
     @app.get("/api/vehicles/{vid}/sightings")
     def vehicle_sightings(vid: int):

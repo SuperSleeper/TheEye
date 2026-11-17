@@ -72,6 +72,7 @@ class Hub:
         self.animals = SubtypeClassifier(cfg.animals, self.embedder) if self.embedder else None
         self.delivery = DeliveryClassifier(self.embedder, cfg.delivery.min_confidence) if self.embedder else None
         self.people = None                         # theeye.people.People, set by __main__ (needs the models folder)
+        self.exhaust = None                        # theeye.exhaust.ExhaustWatch, set by __main__ (same)
         self.plates = PlateRefiner(self)
         self.detector: Optional[Detector] = None
         if cfg.detector.enabled:
@@ -117,6 +118,8 @@ class Hub:
         if self.people:
             threading.Thread(target=self.people.scan_past, name="face-scan", daemon=True).start()
         threading.Thread(target=self._repair_interrupted, name="clip-repair", daemon=True).start()
+        if self.exhaust:
+            self.exhaust.start()
 
     def stop(self) -> None:
         self._stop.set()
@@ -130,6 +133,8 @@ class Hub:
             self.db.execute("UPDATE motion_triggers SET end_ts=? WHERE id=?", (now, tid))
         for cam in self.cams.values():
             cam.stop()
+        if self.exhaust:
+            self.exhaust.stop()
         if self.detector:
             self.detector.stop()
 

@@ -120,6 +120,26 @@ CREATE TABLE IF NOT EXISTS vehicles (
 );
 CREATE INDEX IF NOT EXISTS veh_status ON vehicles(status, visits);
 
+-- Loud exhausts heard (theeye.exhaust), and which recordings have been listened to.
+CREATE TABLE IF NOT EXISTS loud_exhausts (
+    id INTEGER PRIMARY KEY,
+    camera_id TEXT NOT NULL,
+    ts REAL NOT NULL,
+    score REAL NOT NULL,                        -- exhaust sound summed over +-3 s
+    db REAL,                                    -- loudness at the peak, dBFS
+    event_id INTEGER,
+    detection_id INTEGER,
+    vehicle_id INTEGER,
+    clip_path TEXT,
+    t REAL                                      -- seconds into the clip
+);
+CREATE INDEX IF NOT EXISTS lx_ts ON loud_exhausts(ts);
+CREATE TABLE IF NOT EXISTS sound_scans (
+    clip_path TEXT PRIMARY KEY,
+    ts REAL NOT NULL,
+    found INTEGER NOT NULL DEFAULT 0
+);
+
 -- Which triggers / detections caused or occurred during an event.
 CREATE TABLE IF NOT EXISTS event_links (
     event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
@@ -168,6 +188,10 @@ class DB:
             "thumb_score": "REAL NOT NULL DEFAULT 0",     # quality of the object-centered thumbnail in use
             "plates_refined": "REAL",                     # when plates were read again over the recording
         },
+        "vehicles": {
+            "exhausts": "INTEGER NOT NULL DEFAULT 0",     # visits with a loud exhaust (theeye.exhaust)
+            "exhaust_ts": "REAL",                         # only loud exhausts after this count (set on unflag)
+        },
         "zones": {
             "ai": "INTEGER NOT NULL DEFAULT 1",           # objects only count when their base is inside such a zone
         },
@@ -190,6 +214,10 @@ class DB:
             self.conn.execute("DELETE FROM vehicles")
             self.conn.execute("UPDATE detections SET vehicle_id = NULL, moving = NULL")
             self.conn.execute("PRAGMA user_version = 1")
+        if v < 2:   # vehicles now flag for loud exhausts, not just for coming by often: drop the old automatic flags
+            self.conn.execute("UPDATE vehicles SET status='new', flagged_ts=NULL"
+                              " WHERE status='flagged' AND flagged_ts IS NOT NULL AND exhausts=0")
+            self.conn.execute("PRAGMA user_version = 2")
 
     def _add_columns(self) -> None:
         for table, cols in self.ADDED_COLUMNS.items():

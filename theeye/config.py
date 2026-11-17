@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 from urllib.parse import quote
 
 import yaml
@@ -185,6 +185,10 @@ class StorageConfig(BaseModel):
 
 class VehiclesConfig(BaseModel):
     enabled: bool = True
+    # What flags a vehicle: "exhaust" = loud exhaust on exhaust_visits separate visits (theeye.exhaust);
+    # "visits" = simply seen on repeat_visits separate visits.
+    flag_by: Literal["exhaust", "visits"] = "exhaust"
+    exhaust_visits: int = Field(2, ge=1, le=100)
     repeat_visits: int = Field(3, ge=2, le=100)        # flag a vehicle seen on this many separate visits
     visit_gap_minutes: float = Field(30, ge=1)         # sightings closer together than this are one visit
     match_similarity: float = Field(0.88, ge=0.5, le=0.99)   # appearance match threshold (cosine)
@@ -234,6 +238,14 @@ class DeliveryConfig(BaseModel):
     min_confidence: float = Field(0.95, ge=0.5, le=0.999)   # tested on 2 days of footage: 13/13 right at 0.95
 
 
+class ExhaustConfig(BaseModel):
+    """Tag recordings with a loud exhaust (a car revving or roaring past; not road noise or a blower). Each finished
+    recording's sound is checked, then its frames for a vehicle driving past. Needs <install>/models/yamnet."""
+    enabled: bool = True
+    min_score: float = Field(1.0, ge=0.3, le=5.0)     # exhaust sound summed over +-3 s; higher = only the loudest
+    cameras: list[str] = Field(default_factory=list)  # camera ids to listen on; empty = every camera with sound
+
+
 class PeopleConfig(BaseModel):
     """Recognise named people (family members) by face. Face models live in <install>/models."""
     enabled: bool = True
@@ -250,6 +262,7 @@ class Config(BaseModel):
     animals: AnimalsConfig = Field(default_factory=AnimalsConfig)
     delivery: DeliveryConfig = Field(default_factory=DeliveryConfig)
     people: PeopleConfig = Field(default_factory=PeopleConfig)
+    exhaust: ExhaustConfig = Field(default_factory=ExhaustConfig)
 
     @model_validator(mode="before")
     @classmethod

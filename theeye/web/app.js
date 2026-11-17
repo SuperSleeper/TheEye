@@ -848,7 +848,10 @@ async function loadVehicles() {
   $$('#veh-filter button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.s === VH.status)));
   const r = await api(`/api/vehicles?status=${VH.status}`);
   updateVehicleBadge(r.counts);
-  $('#veh-help').textContent = `A vehicle seen driving on ${r.repeat_visits} separate visits (30+ min apart) is flagged; parked cars don't count. ` +
+  $('#veh-help').textContent = (r.flag_by === 'exhaust'
+    ? `A vehicle with a loud exhaust on ${r.exhaust_visits} separate visit${r.exhaust_visits === 1 ? '' : 's'} (30+ min apart) is flagged. ` +
+      'Loud exhaust = revving or roaring past, not road noise or a blower; search "loud exhaust" to hear them all. Fast cars are often a blur, so not every one is matched to a vehicle. '
+    : `A vehicle seen driving on ${r.repeat_visits} separate visits (30+ min apart) is flagged; parked cars don't count. `) +
     'Matched by licence plate when readable, otherwise by appearance, so two identical cars can be merged. Mark your own cars as Known.';
   $('#veh-list').innerHTML = r.vehicles.map(v => `
     <div class="card veh ${v.status}" data-id="${v.id}">
@@ -856,7 +859,7 @@ async function loadVehicles() {
       <div class="body">
         <div class="title"><span>${esc(v.label)}${v.plate ? ` <span class="chip plate">${esc(v.plate)}</span>` : ''}</span>
           ${v.status === 'new' ? '' : `<span class="status">${v.status === 'flagged' ? '🚩 flagged' : 'known'}</span>`}</div>
-        <div><b>${v.visits}</b> visit${v.visits === 1 ? '' : 's'} · ${v.sightings} sighting${v.sightings === 1 ? '' : 's'} · ${v.cameras.map(camName).map(esc).join(', ')}</div>
+        <div>${v.exhausts ? `<b>🔊 ${v.exhausts}</b> loud exhaust${v.exhausts === 1 ? '' : 's'} · ` : ''}<b>${v.visits}</b> visit${v.visits === 1 ? '' : 's'} · ${v.sightings} sighting${v.sightings === 1 ? '' : 's'} · ${v.cameras.map(camName).map(esc).join(', ')}</div>
         <div class="muted">last ${fmtTime(v.last_ts)}${v.note ? ` · ${esc(v.note)}` : ''}</div>
         <div class="row2">
           ${v.status !== 'known' ? '<button type="button" data-st="known" title="Your own or a neighbour&#39;s car: never flag">Mark known</button>' : ''}

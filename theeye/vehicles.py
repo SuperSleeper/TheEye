@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -38,6 +39,8 @@ class _V:
     last_ts: float
     status: str
     cameras: set[str] = field(default_factory=set)
+    exhausts: int = 0
+    exhaust_ts: float = 0.0
 
 
 class VehicleRegistry:
@@ -49,7 +52,8 @@ class VehicleRegistry:
             ex = (np.frombuffer(r["embedding"], dtype=np.float32).reshape(r["n_ex"], -1).copy()
                   if r["embedding"] and r["n_ex"] else None)
             self._v[r["id"]] = _V(r["id"], r["grp"], r["plate"], ex,
-                                  r["sightings"], r["visits"], r["last_ts"], r["status"], set(jload(r["cameras"], [])))
+                                  r["sightings"], r["visits"], r["last_ts"], r["status"], set(jload(r["cameras"], [])),
+                                  r["exhausts"] or 0, r["exhaust_ts"] or 0.0)
 
     # ------------------------------------------------------------------ match
     def eligible(self, label: str, bbox: list[float], moving: bool) -> bool:
@@ -91,7 +95,7 @@ class VehicleRegistry:
                         v.ex = np.vstack([v.ex, vec])
                     else:                               # keep the first sightings, refresh the newest slot
                         v.ex[-1] = vec
-                flag = v.status == "new" and v.visits >= self.cfg.repeat_visits
+                flag = self.cfg.flag_by == "visits" and v.status == "new" and v.visits >= self.cfg.repeat_visits
                 if flag:
                     v.status = "flagged"
                     log.info("vehicle %d flagged: %d visits (%s)", v.id, v.visits, ", ".join(sorted(v.cameras)))
@@ -131,10 +135,35 @@ class VehicleRegistry:
             # Unflagging restarts the count (it flags again after `repeat_visits` more visits);
             # "Not known" keeps the history.
             if status == "new" and v.status == "flagged":
-                v.visits = 0
+                v.visits = v.exhausts = 0
+                v.exhaust_ts = time.time()           # loud exhausts from now on count towards the next flag
             v.status = status
-            self.db.execute("UPDATE vehicles SET status=?, visits=?, note=COALESCE(?, note) WHERE id=?",
-                            (status, v.visits, note, vid))
+            self.db.execute("UPDATE vehicles SET status=?, visits=?, exhausts=?, exhaust_ts=?, note=COALESCE(?, note)"
+                            " WHERE id=?", (status, v.visits, v.exhausts, v.exhaust_ts, note, vid))
+
+    def loud_exhaust(self, vid: int) -> bool:
+        """A loud exhaust from this vehicle was just stored in loud_exhausts (theeye.exhaust): recount its visits
+        with one (several within the visit gap count once; recordings are scanned in any order). Only ones after
+        exhaust_ts count (set when it's unflagged). Returns True if this flagged it."""
+        with self._lock:
+            v = self._v.get(vid)
+            if v is None:
+                return False
+            n, last = 0, None
+            for r in self.db.all("SELECT ts FROM loud_exhausts WHERE vehicle_id=? AND ts > ? ORDER BY ts",
+                                 (vid, v.exhaust_ts)):
+                if last is None or r["ts"] - last > self.cfg.visit_gap_minutes * 60:
+                    n += 1
+                last = r["ts"]
+            v.exhausts = n
+            flag = self.cfg.flag_by == "exhaust" and v.status == "new" and v.exhausts >= self.cfg.exhaust_visits
+            if flag:
+                v.status = "flagged"
+                log.info("vehicle %d flagged: loud exhaust on %d visits", v.id, v.exhausts)
+            self.db.execute("UPDATE vehicles SET exhausts=?, exhaust_ts=?, status=?,"
+                            " flagged_ts=CASE WHEN ? THEN ? ELSE flagged_ts END WHERE id=?",
+                            (v.exhausts, v.exhaust_ts, v.status, int(flag), time.time(), vid))
+            return flag
 
     def is_known(self, vid: Optional[int]) -> bool:
         v = self._v.get(vid) if vid else None

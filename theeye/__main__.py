@@ -40,6 +40,8 @@ def main() -> None:
     from .people import People
     hub.people = People(hub, cfg_path.parent / "models")
     searcher.people = hub.people
+    from .exhaust import ExhaustWatch
+    hub.exhaust = ExhaustWatch(hub, cfg_path.parent / "models")
     app = create_app(hub, searcher, cfg_path)
     srv = cfg.server
     tls = {}

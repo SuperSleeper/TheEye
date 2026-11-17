@@ -48,7 +48,7 @@ LABEL_WORDS = {
     "animals": ["dog", "cat", "bird"],
 }
 # Delivery services as people say them -> the stored tag (lower case for matching).
-SERVICE_KEYS = {s.lower() for s in SERVICES}
+SERVICE_KEYS = {s.lower() for s in SERVICES} | {"loud exhaust"}
 SERVICE_WORDS = {"amazon": "amazon", "prime": "amazon", "ups": "ups", "fedex": "fedex", "fed ex": "fedex",
                  "usps": "usps", "postal": "usps", "post office": "usps", "mailman": "usps", "mail carrier": "usps",
                  "mail truck": "usps", "mail": "usps", "postman": "usps",
@@ -57,7 +57,14 @@ SERVICE_WORDS = {"amazon": "amazon", "prime": "amazon", "ups": "ups", "fedex": "
                  "cop": "police", "sheriff": "police", "patrol car": "police",
                  "fire truck": "fire", "fire engine": "fire", "firefighters": "fire", "firefighter": "fire",
                  "fire department": "fire", "fireman": "fire", "fire": "fire",
-                 "ambulance": "emt", "paramedics": "emt", "paramedic": "emt", "emts": "emt", "emt": "emt", "ems": "emt"}
+                 "ambulance": "emt", "paramedics": "emt", "paramedic": "emt", "emts": "emt", "emt": "emt", "ems": "emt",
+                 # theeye.exhaust
+                 "loud exhausts": "loud exhaust", "loud exhaust": "loud exhaust", "exhausts": "loud exhaust",
+                 "exhaust": "loud exhaust", "loud cars": "loud exhaust", "loud car": "loud exhaust",
+                 "loud vehicles": "loud exhaust", "loud vehicle": "loud exhaust", "loud trucks": "loud exhaust",
+                 "loud truck": "loud exhaust", "loud motorcycles": "loud exhaust", "loud motorcycle": "loud exhaust",
+                 "loud engines": "loud exhaust", "loud engine": "loud exhaust", "mufflers": "loud exhaust",
+                 "muffler": "loud exhaust", "revving": "loud exhaust", "revs": "loud exhaust"}
 DELIVERY_KEYS = {"amazon", "ups", "fedex", "usps"}
 EMERGENCY_KEYS = {"police", "fire", "emt"}
 STOP = {"a", "an", "the", "any", "some", "of", "in", "on", "at", "by", "near", "with", "from", "to", "and", "or",
@@ -436,7 +443,8 @@ class Searcher:
         return [{"label": t["label"], "conf": t["conf"]} for t in self.db.all(
             "SELECT COALESCE(d.subtype, d.kind, d.label) AS label, MAX(d.confidence) AS conf"
             " FROM event_links l JOIN detections d"
-            " ON d.id = l.ref_id AND l.kind = 'detection' WHERE l.event_id = ? GROUP BY d.label ORDER BY conf DESC",
+            " ON d.id = l.ref_id AND l.kind = 'detection' WHERE l.event_id = ?"
+            " GROUP BY COALESCE(d.subtype, d.kind, d.label) ORDER BY conf DESC",
             (eid,))]
 
     def _events(self, f: dict) -> list[dict]:
