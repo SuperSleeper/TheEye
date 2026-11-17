@@ -603,12 +603,17 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
 
     @app.get("/api/vehicles/{vid}/sightings")
     def vehicle_sightings(vid: int):
+        # Loud exhausts first (they're why a car is flagged), each from 3 s before the sound; then the rest, newest first.
         rows = db.all("SELECT d.id, d.camera_id, d.label, d.confidence, d.first_ts, d.last_ts, d.plate, d.snapshot_path,"
-                      " d.event_id, e.clip_path, e.clip_offset, e.start_ts AS ev_start FROM detections d"
-                      " LEFT JOIN events e ON e.id = d.event_id WHERE d.vehicle_id = ? ORDER BY d.first_ts DESC", (vid,))
+                      " d.event_id, d.subtype = 'loud exhaust' AS exhaust, x.ts AS exhaust_ts, e.clip_path, e.clip_offset,"
+                      " e.start_ts AS ev_start FROM detections d LEFT JOIN events e ON e.id = d.event_id"
+                      " LEFT JOIN loud_exhausts x ON x.detection_id = d.id"
+                      " WHERE d.vehicle_id = ? ORDER BY exhaust DESC, d.first_ts DESC", (vid,))
         for r in rows:
+            r["exhaust"] = bool(r["exhaust"])
             if r["clip_path"]:
-                r["seek"] = max(0.0, r["clip_offset"] + r["first_ts"] - r["ev_start"])
+                at = (r.pop("exhaust_ts") or r["first_ts"] + 1.5) - 3 if r["exhaust"] else r["first_ts"]
+                r["seek"] = max(0.0, r["clip_offset"] + at - r["ev_start"])
         return rows
 
     @app.put("/api/vehicles/{vid}")
