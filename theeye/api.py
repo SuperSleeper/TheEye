@@ -574,7 +574,10 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
 
     @app.post("/api/detections/{det_id}/person")
     async def detection_person(det_id: int, person_id: int = Body(..., embed=True)):
-        """'This is <person>' from the event player: enrol this detection's face."""
+        """'This is <person>' from the event player: enrol this detection's face. person_id 0: 'not them' (undo a
+        wrong mark or match)."""
+        if person_id == 0:
+            return {"changed": await asyncio.to_thread(people_or_503().unmark_detection, det_id)}
         fid = await asyncio.to_thread(people_or_503().enrol_detection, det_id, person_id)
         if not fid:
             raise HTTPException(422, "no usable face found for this detection (too small, turned away or dark)")

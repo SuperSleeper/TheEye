@@ -135,6 +135,20 @@ class People:
             threading.Thread(target=self.rematch_all, name="faces-rematch", daemon=True).start()
         self._match(self.db.one("SELECT * FROM faces WHERE id=?", (face_id,)))
 
+    def unmark_detection(self, det_id: int) -> int:
+        """'Not <person>' on a detection: take its face(s) off whoever they were matched to or confirmed as, and
+        don't suggest them for that person again. Returns how many faces were changed."""
+        n = 0
+        for r in self.db.all("SELECT id, person_id FROM faces WHERE detection_id=? AND person_id IS NOT NULL", (det_id,)):
+            self.reject(r["id"], r["person_id"])
+            n += 1
+        if not n:                                  # a name with no face row behind it: just clear it
+            row = self.db.one("SELECT who FROM detections WHERE id=?", (det_id,))
+            if row and row["who"]:
+                self._set_who(det_id, None, old=row["who"])
+                n = 1
+        return n
+
     def enrol_detection(self, det_id: int, pid: int) -> Optional[int]:
         """'This is <person>' on a detection: use its face (finding it in the recording if needed)."""
         row = self.db.one("SELECT id FROM faces WHERE detection_id=? ORDER BY size DESC LIMIT 1", (det_id,))

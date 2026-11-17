@@ -279,3 +279,8 @@ img.face { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; bor
 .small-btn { padding: 3px 8px; font-size: 12px; }
 select.who { font-size: 12px; padding: 1px 4px; margin-left: 4px; }
 .small.warn { color: #ffd60a; }
+.cf { position: relative; display: inline-block; }
+.cf-x { position: absolute; top: 2px; right: 2px; padding: 0 5px; font-size: 11px; line-height: 16px; border-radius: 999px;
+  background: rgba(0,0,0,.65); border-color: transparent; opacity: 0; }
+.cf:hover .cf-x, .cf-x:focus { opacity: 1; }
+@media (hover: none) { .cf-x { opacity: 1; } }

@@ -713,13 +713,13 @@ async function openEvent(id, seek) {
       <span class="det" data-seek="${d.seek}">${d.snapshot_path ? `<img src="/media/${esc(d.snapshot_path)}">` : ''}
       ${esc(animalName(d))} ${(d.confidence * 100).toFixed(0)}%${d.plate ? ` <span class="chip plate">${esc(d.plate)}</span>` : ''}
       ${d.label === 'person' && PEOPLE.list.length ? `<select class="who" data-det="${d.id}" title="Who is this? Teaches face recognition">
-        <option value="">${d.who ? esc(d.who) : 'Who is this?'}</option>${PEOPLE.list.filter(p => p.name !== d.who).map(p => `<option value="${p.id}">This is ${esc(p.name)}</option>`).join('')}</select>` : ''}</span>`).join('') || '<span class="muted">none</span>'}</div>
+        <option value="">${d.who ? esc(d.who) : 'Who is this?'}</option>${d.who ? `<option value="0">Not ${esc(d.who)}</option>` : ''}${PEOPLE.list.filter(p => p.name !== d.who).map(p => `<option value="${p.id}">This is ${esc(p.name)}</option>`).join('')}</select>` : ''}</span>`).join('') || '<span class="muted">none</span>'}</div>
     <div style="margin-top:6px"><b>Motion triggers</b>: ${e.motion.length} ${e.motion.map(m => `<span class="chip">zone ${m.zone_id || 'full'} · ${fmtDur(m.end_ts ? m.end_ts - m.start_ts : null)}</span>`).join(' ')}</div>
     <div style="margin-top:8px"><button id="pl-del" class="danger">Delete event</button></div>`;
   $$('#pl-info .det').forEach(d => d.onclick = ev => { if (ev.target.closest('select')) return; v.currentTime = +d.dataset.seek; v.play(); });
   $$('#pl-info select.who').forEach(s => s.onchange = async () => {
-    if (!s.value) return;
-    const name = s.selectedOptions[0].textContent.replace(/^This is /, '');
+    if (s.value === '') return;
+    const name = s.selectedOptions[0].textContent.replace(/^(This is|Not) /, '');
     s.disabled = true;
     try { await api(`/api/detections/${s.dataset.det}/person`, { method: 'POST', body: { person_id: +s.value } }); openEvent(id, v.currentTime); }
     catch (err) { s.disabled = false; s.value = ''; alertInline(s, err.message.includes('422') ? `No clear face of ${name} here (too small, turned away or dark)` : 'Failed: ' + err.message); }
@@ -1675,18 +1675,26 @@ async function loadPeople() {
   $('#people-stats').textContent = !r.models ? 'face models missing: recognition off'
     : `${st.faces || 0} faces found this run` + (st.scan_left ? ` · ${st.scan_left} past people still to look through` : '');
   const face = f => `<img class="face" loading="lazy" src="/media/${esc(f.path)}" title="${esc(camName(f.camera_id))} · ${esc(fmtTime(f.ts))}">`;
+  const confirmedFace = (f, p) => `<span class="cf" data-fid="${f.id}">${face(f)}<button type="button" class="cf-x"
+    title="Not ${esc(p.name)}: remove this photo (it won't be suggested for ${esc(p.name)} again)" aria-label="Remove photo">✕</button></span>`;
   $('#people-list').innerHTML = r.people.map(p => `
     <div class="card-s person" data-pid="${p.id}">
       <div class="card-h"><h2>${esc(p.name)}</h2>
         <span class="muted small">${p.n_confirmed} confirmed · seen ${p.n_seen}×${p.last_seen ? ' · last ' + esc(fmtTime(p.last_seen)) : ''}</span>
         <button type="button" class="danger small-btn" data-del="${p.id}" title="Remove ${esc(p.name)} and their face examples">Remove</button></div>
-      <div class="faces">${p.confirmed.map(face).join('') || '<span class="muted small">No confirmed faces yet: choose “This is ' + esc(p.name) + '” on a person in a recording.</span>'}</div>
+      <div class="faces">${p.confirmed.map(f => confirmedFace(f, p)).join('') || '<span class="muted small">No confirmed faces yet: choose “This is ' + esc(p.name) + '” on a person in a recording.</span>'}</div>
       <div class="sub-h">Is this ${esc(p.name)}?</div>
       <div class="sugg" data-pid="${p.id}"><span class="muted small">Looking…</span></div>
     </div>`).join('') || '<p class="muted">No people yet.</p>';
   $$('#people-list [data-del]').forEach(b => b.onclick = async () => {
     if (b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = 'Click again to remove'; return; }
     await api(`/api/people/${b.dataset.del}`, { method: 'DELETE' }); loadPeople();
+  });
+  $$('#people-list .cf-x').forEach(b => b.onclick = async () => {
+    const cf = b.closest('.cf'), pid = +b.closest('.person').dataset.pid;
+    b.disabled = true;
+    try { await api(`/api/faces/${cf.dataset.fid}`, { method: 'POST', body: { person_id: pid, verdict: 'no' } }); cf.remove(); setTimeout(loadPeople, 1500); }
+    catch (err) { b.disabled = false; alertInline(b, 'Failed: ' + err.message); }
   });
   for (const p of r.people) loadSuggestions(p);
 }
