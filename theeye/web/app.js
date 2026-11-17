@@ -732,7 +732,9 @@ async function openEvent(id, seek) {
       <span class="det" data-seek="${d.seek}">${d.snapshot_path ? `<img src="/media/${esc(d.snapshot_path)}">` : ''}
       ${esc(animalName(d))} ${(d.confidence * 100).toFixed(0)}%${d.plate ? ` <span class="chip plate">${esc(d.plate)}</span>` : ''}
       ${d.label === 'person' && PEOPLE.list.length ? `<select class="who" data-det="${d.id}" title="Who is this? Teaches face recognition">
-        <option value="">${d.who ? esc(d.who) : 'Who is this?'}</option>${d.who ? `<option value="0">Not ${esc(d.who)}</option>` : ''}${PEOPLE.list.filter(p => p.name !== d.who).map(p => `<option value="${p.id}">This is ${esc(p.name)}</option>`).join('')}</select>` : ''}</span>`).join('') || '<span class="muted">none</span>'}</div>
+        <option value="">${d.who ? esc(d.who) : 'Who is this?'}</option>${d.who ? `<option value="0">Not ${esc(d.who)}</option>` : ''}${PEOPLE.list.filter(p => p.name !== d.who).map(p => `<option value="${p.id}">This is ${esc(p.name)}</option>`).join('')}</select>` : ''}
+      ${(d.label === 'dog' || d.label === 'cat') && PETS.list.length ? `<select class="pet" data-det="${d.id}" title="Which pet is this? Teaches pet recognition">
+        <option value="">${d.who ? esc(d.who) : 'Which pet?'}</option>${d.who ? `<option value="0">Not ${esc(d.who)}</option>` : ''}${PETS.list.filter(p => p.name !== d.who).map(p => `<option value="${p.id}">This is ${esc(p.name)}</option>`).join('')}</select>` : ''}</span>`).join('') || '<span class="muted">none</span>'}</div>
     <div style="margin-top:6px"><b>Motion triggers</b>: ${e.motion.length} ${e.motion.map(m => `<span class="chip">zone ${m.zone_id || 'full'} · ${fmtDur(m.end_ts ? m.end_ts - m.start_ts : null)}</span>`).join(' ')}</div>
     <div style="margin-top:8px"><button id="pl-del" class="danger">Delete event</button></div>`;
   $$('#pl-info .det').forEach(d => d.onclick = ev => { if (ev.target.closest('select')) return; v.currentTime = +d.dataset.seek; v.play(); });
@@ -742,6 +744,12 @@ async function openEvent(id, seek) {
     s.disabled = true;
     try { await api(`/api/detections/${s.dataset.det}/person`, { method: 'POST', body: { person_id: +s.value } }); openEvent(id, v.currentTime); }
     catch (err) { s.disabled = false; s.value = ''; alertInline(s, err.message.includes('422') ? `No clear face of ${name} here (too small, turned away or dark)` : 'Failed: ' + err.message); }
+  });
+  $$('#pl-info select.pet').forEach(s => s.onchange = async () => {
+    if (s.value === '') return;
+    s.disabled = true;
+    try { await api(`/api/detections/${s.dataset.det}/pet`, { method: 'POST', body: { pet_id: +s.value } }); openEvent(id, v.currentTime); }
+    catch (err) { s.disabled = false; s.value = ''; alertInline(s, err.message.includes('422') ? 'Too small or no snapshot to learn from' : 'Failed: ' + err.message); }
   });
   if ($('#pl-pre')) {
     $('#pl-pre').onclick = () => { v.currentTime = e.clip_offset; v.play(); };
@@ -1865,6 +1873,7 @@ async function loadPeople() {
   });
   bindFaceClicks($('#people-list'));
   for (const p of r.people) loadSuggestions(p);
+  loadPets();
 }
 // A face picture plays the recording it came from, a moment before the face was seen.
 function faceImg(f) {
@@ -1899,5 +1908,64 @@ $('#people-add').onsubmit = async ev => {
   ev.preventDefault();
   const f = ev.target;
   try { await api('/api/people', { method: 'POST', body: { name: f.name.value } }); f.reset(); await refreshPeople(); loadPeople(); }
+  catch (err) { alertInline(f.querySelector('button'), err.message.includes('409') ? 'That name is already used' : 'Failed: ' + err.message); }
+};
+
+// ---------------------------------------------------------------- pets (recognised by look)
+const PETS = { list: [] };
+async function refreshPets() { try { PETS.list = (await api('/api/pets')).pets; } catch { PETS.list = []; } }
+refreshPets();
+async function loadPets() {
+  const r = await api('/api/pets');
+  PETS.list = r.pets;
+  const st = r.stats || {};
+  $('#pets-stats').textContent = st.scan_left ? `${st.scan_left} past dogs/cats still to look through` : '';
+  $('#pets-list').innerHTML = r.pets.map(p => `
+    <div class="card-s person" data-pid="${p.id}">
+      <div class="card-h"><h2>${esc(p.name)}</h2>
+        <span class="muted small">${p.n_confirmed} confirmed · seen ${p.n_seen}×${p.last_seen ? ' · last ' + esc(fmtTime(p.last_seen)) : ''}</span>
+        <button type="button" class="danger small-btn" data-del="${p.id}" title="Remove ${esc(p.name)} and their examples">Remove</button></div>
+      <div class="faces">${p.confirmed.map(f => `<span class="cf" data-fid="${f.id}">${faceImg(f)}<button type="button" class="cf-x"
+        title="Not ${esc(p.name)}: take this picture off" aria-label="Not ${esc(p.name)}">✕</button></span>`).join('')
+        || '<span class="muted small">No confirmed pictures yet: choose “This is ' + esc(p.name) + '” on a dog or cat in a recording, or pick from the dogs and cats seen below.</span>'}</div>
+      <div class="sub-h">${p.n_confirmed ? 'Is this ' + esc(p.name) + '?' : 'Dogs and cats seen: which are ' + esc(p.name) + '?'}</div>
+      <div class="sugg" data-pid="${p.id}"><span class="muted small">Looking…</span></div>
+    </div>`).join('');
+  $$('#pets-list [data-del]').forEach(b => b.onclick = async () => {
+    if (b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = 'Click again to remove'; return; }
+    await api(`/api/pets/${b.dataset.del}`, { method: 'DELETE' }); await refreshPets(); loadPets();
+  });
+  $$('#pets-list .cf-x').forEach(b => b.onclick = async () => {
+    const cf = b.closest('.cf'), pid = +b.closest('.person').dataset.pid;
+    b.disabled = true;
+    try { await api(`/api/pet_looks/${cf.dataset.fid}`, { method: 'POST', body: { pet_id: pid, verdict: 'no' } }); cf.hidden = true; setTimeout(loadPets, 1500); }
+    catch (err) { b.disabled = false; alertInline(b, 'Failed: ' + err.message); }
+  });
+  bindFaceClicks($('#pets-list'));
+  for (const p of r.pets) loadPetSuggestions(p);
+}
+async function loadPetSuggestions(p) {
+  const box = $(`#pets-list .sugg[data-pid="${p.id}"]`);
+  const s = await api(`/api/pets/${p.id}/suggestions?limit=40`);
+  box.innerHTML = s.map(f => `
+    <div class="sg" data-fid="${f.id}">
+      ${faceImg(f)}
+      <div class="small muted">${esc(camName(f.camera_id))}<br>${esc(new Date(f.ts * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}</div>
+      <div class="small">${f.score != null ? Math.round(f.score * 100) + '%' : ''} ${f.status === 'auto' ? '· tagged' : ''}</div>
+      <div class="row" style="gap:4px"><button type="button" data-v="yes" title="Yes, this is ${esc(p.name)}">✓</button>
+        <button type="button" data-v="no" title="No, not ${esc(p.name)}">✗</button></div>
+    </div>`).join('') || '<span class="muted small">No suggestions yet. More appear as past sightings are looked through.</span>';
+  bindFaceClicks(box);
+  $$('.sg button', box).forEach(b => b.onclick = async () => {
+    const sg = b.closest('.sg');
+    await api(`/api/pet_looks/${sg.dataset.fid}`, { method: 'POST', body: { pet_id: p.id, verdict: b.dataset.v } });
+    sg.hidden = true;
+    if (b.dataset.v === 'yes' && p.n_confirmed === 0) setTimeout(loadPets, 1500);    // first example: suggestions change
+  });
+}
+$('#pets-add').onsubmit = async ev => {
+  ev.preventDefault();
+  const f = ev.target;
+  try { await api('/api/pets', { method: 'POST', body: { name: f.name.value } }); f.reset(); await refreshPets(); loadPets(); }
   catch (err) { alertInline(f.querySelector('button'), err.message.includes('409') ? 'That name is already used' : 'Failed: ' + err.message); }
 };

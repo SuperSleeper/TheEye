@@ -100,6 +100,27 @@ CREATE TABLE IF NOT EXISTS faces (
 CREATE INDEX IF NOT EXISTS faces_person ON faces(person_id);
 CREATE INDEX IF NOT EXISTS faces_det ON faces(detection_id);
 
+-- Named pets, recognised by how they look (CLIP picture of just the animal; theeye.pets). Same flow as faces.
+CREATE TABLE IF NOT EXISTS pets (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    created REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS pet_looks (
+    id INTEGER PRIMARY KEY,
+    detection_id INTEGER UNIQUE,
+    camera_id TEXT,
+    ts REAL,
+    size INTEGER,                               -- animal's size in px (larger = more reliable)
+    embedding BLOB NOT NULL,                    -- CLIP picture of the animal, normalised float32
+    path TEXT,                                  -- picture of the animal
+    pet_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'unknown',     -- unknown | auto | confirmed | rejected
+    score REAL,                                 -- best similarity to a pet
+    rejected TEXT                               -- JSON list of pet ids this isn't
+);
+CREATE INDEX IF NOT EXISTS pet_looks_pet ON pet_looks(pet_id);
+
 -- Repeat-vehicle tracking: one row per distinct vehicle (matched by plate or appearance).
 CREATE TABLE IF NOT EXISTS vehicles (
     id INTEGER PRIMARY KEY,
@@ -203,7 +224,7 @@ class DB:
             "plate_reads": "INTEGER",                     # frames the plate was read in (recording re-read)
             "plate_agree": "INTEGER",                     # of those, frames that read exactly the final text
             "subtype_conf": "REAL",
-            "who": "TEXT",                                # name of the recognised person (theeye.people)
+            "who": "TEXT",                                # name of the recognised person or pet (theeye.people / theeye.pets)
             "face_checked": "INTEGER",                    # 1 once looked at for a face                       # certainty of kind/subtype; 0 = looked, kept the label
         },
     }

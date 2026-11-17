@@ -191,28 +191,9 @@ class People:
 
     # ------------------------------------------------------------ tags
     def _set_who(self, det_id: int, name: Optional[str], old: Optional[str] = None) -> None:
-        """Name a detection (or clear it), and keep its recordings' tags in step."""
-        self.db.execute("UPDATE detections SET who=? WHERE id=?", (name, det_id))
         if name:
             self.hub.clear_service(det_id)       # family isn't the Amazon driver, whatever the vest
-        for r in self.db.all("SELECT event_id FROM event_links WHERE kind='detection' AND ref_id=?", (det_id,)):
-            eid = r["event_id"]
-            others = {x["who"] for x in self.db.all(
-                "SELECT d.who FROM event_links l JOIN detections d ON d.id=l.ref_id AND l.kind='detection'"
-                " WHERE l.event_id=? AND d.who IS NOT NULL", (eid,))}
-            with self.hub._lock:
-                ev = next((e for e in self.hub._open_events.values() if e.id == eid), None)
-                labels = set(ev.labels) if ev else set(jload((self.db.one("SELECT labels FROM events WHERE id=?",
-                                                                          (eid,)) or {}).get("labels"), []))
-                if name:
-                    labels.add(name)
-                if old and old != name and old not in others:
-                    labels.discard(old)
-                if ev:
-                    ev.labels = labels
-                    self.hub._flush_event_meta(ev)
-                else:
-                    self.db.execute("UPDATE events SET labels=? WHERE id=?", (json.dumps(sorted(labels)), eid))
+        set_who(self.hub, det_id, name, old)
 
     # ------------------------------------------------------------ live and past footage
     def on_track_end(self, t) -> None:
@@ -301,3 +282,27 @@ class People:
                     return
                 self._scan_detection(r["id"])
                 self.stats["scanned"] += 1
+
+
+def set_who(hub, det_id: int, name: Optional[str], old: Optional[str] = None) -> None:
+    """Name a detection (a person or a pet) or clear it, and keep its recordings' tags in step."""
+    db = hub.db
+    db.execute("UPDATE detections SET who=? WHERE id=?", (name, det_id))
+    for r in db.all("SELECT event_id FROM event_links WHERE kind='detection' AND ref_id=?", (det_id,)):
+        eid = r["event_id"]
+        others = {x["who"] for x in db.all(
+            "SELECT d.who FROM event_links l JOIN detections d ON d.id=l.ref_id AND l.kind='detection'"
+            " WHERE l.event_id=? AND d.who IS NOT NULL", (eid,))}
+        with hub._lock:
+            ev = next((e for e in hub._open_events.values() if e.id == eid), None)
+            labels = set(ev.labels) if ev else set(jload((db.one("SELECT labels FROM events WHERE id=?",
+                                                                 (eid,)) or {}).get("labels"), []))
+            if name:
+                labels.add(name)
+            if old and old != name and old not in others:
+                labels.discard(old)
+            if ev:
+                ev.labels = labels
+                hub._flush_event_meta(ev)
+            else:
+                db.execute("UPDATE events SET labels=? WHERE id=?", (json.dumps(sorted(labels)), eid))

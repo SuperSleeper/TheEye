@@ -72,6 +72,7 @@ class Hub:
         self.animals = SubtypeClassifier(cfg.animals, self.embedder) if self.embedder else None
         self.delivery = DeliveryClassifier(self.embedder, cfg.delivery.min_confidence) if self.embedder else None
         self.people = None                         # theeye.people.People, set by __main__ (needs the models folder)
+        self.pets = None                           # theeye.pets.Pets, set by __main__
         self.exhaust = None                        # theeye.exhaust.ExhaustWatch, set by __main__ (same)
         self.plates = PlateRefiner(self)
         self.detector: Optional[Detector] = None
@@ -117,6 +118,8 @@ class Hub:
         threading.Thread(target=self._delivery_backfill, name="delivery-backfill", daemon=True).start()
         if self.people:
             threading.Thread(target=self.people.scan_past, name="face-scan", daemon=True).start()
+        if self.pets:
+            threading.Thread(target=self.pets.scan_past, name="pet-scan", daemon=True).start()
         threading.Thread(target=self._repair_interrupted, name="clip-repair", daemon=True).start()
         if self.exhaust:
             self.exhaust.start()
@@ -328,6 +331,11 @@ class Hub:
                 self.people.on_track_end(t)
             except Exception:  # noqa: BLE001
                 log.exception("face recognition failed")
+        if self.pets and t.label in ("dog", "cat"):
+            try:
+                self.pets.on_track_end(t)
+            except Exception:  # noqa: BLE001
+                log.exception("pet recognition failed")
 
     # -------------------------------------------------------------- animals
     def _classify_animal(self, label: str, emb: Optional[bytes]):

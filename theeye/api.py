@@ -51,7 +51,7 @@ def _storage_scan(data: Path, hub: Hub, install: Path) -> dict:
         clips, nclips, oldest = _du(data / "clips" / cid)
         snaps, nsnaps, oldest_snap = _du(data / "snaps" / cid)
         cam = hub.cams.get(cid)
-        cams.append({"id": cid, "name": names.get(cid, "Face pictures (People)" if cid == "faces" else cid),
+        cams.append({"id": cid, "name": names.get(cid, "Face & pet pictures" if cid == "faces" else cid),
                      "configured": cid in names, "special": cid == "faces" and cid not in names,
                      "clips_bytes": clips, "clips": nclips, "oldest_clip": oldest,
                      "snaps_bytes": snaps, "snaps": nsnaps, "oldest_snap": oldest_snap, "total_bytes": clips + snaps,
@@ -553,7 +553,8 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         name = name.strip()
         if not name or len(name) > 40:
             raise HTTPException(422, "name must be 1-40 characters")
-        if name.lower() in {n.lower() for n in people_or_503().names().values()}:
+        if name.lower() in {n.lower() for n in people_or_503().names().values()} or (
+                hub.pets and name.lower() in {n.lower() for n in hub.pets.names().values()}):
             raise HTTPException(409, "that name is already used")
         return {"id": people_or_503().add_person(name)}
 
@@ -586,6 +587,66 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         if not fid:
             raise HTTPException(422, "no usable face found for this detection (too small, turned away or dark)")
         return {"face_id": fid}
+
+    # ------------------------------------------------------------ pets (recognised by look)
+    def pets_or_503():
+        if not hub.pets:
+            raise HTTPException(503, "pet recognition isn't available")
+        return hub.pets
+
+    def _name_taken(name: str) -> bool:
+        taken = set(hub.people.names().values()) if hub.people else set()
+        return name.lower() in {n.lower() for n in taken | set(pets_or_503().names().values())}
+
+    @app.get("/api/pets")
+    def pets_list():
+        p = pets_or_503()
+        out = []
+        for pid, name in sorted(p.names().items(), key=lambda kv: kv[1].lower()):
+            conf = p.confirmed(pid)
+            seen = db.one("SELECT COUNT(*) AS n, MAX(ts) AS last FROM pet_looks WHERE pet_id=? AND status IN"
+                          " ('auto','confirmed')", (pid,))
+            out.append({"id": pid, "name": name, "confirmed": conf[:24], "n_confirmed": len(conf),
+                        "n_seen": seen["n"], "last_seen": seen["last"]})
+        return {"pets": out, "stats": p.stats}
+
+    @app.post("/api/pets")
+    def pets_add(name: str = Body(..., embed=True)):
+        name = name.strip()
+        if not name or len(name) > 40:
+            raise HTTPException(422, "name must be 1-40 characters")
+        if _name_taken(name):
+            raise HTTPException(409, "that name is already used")
+        return {"id": pets_or_503().add_pet(name)}
+
+    @app.delete("/api/pets/{pid}")
+    def pets_remove(pid: int):
+        pets_or_503().remove_pet(pid)
+        return {"ok": True}
+
+    @app.get("/api/pets/{pid}/suggestions")
+    async def pets_suggest(pid: int, limit: int = 60):
+        return await asyncio.to_thread(pets_or_503().suggestions, pid, min(limit, 200))
+
+    @app.post("/api/pet_looks/{lid}")
+    def pet_verdict(lid: int, pet_id: int = Body(..., embed=True), verdict: str = Body(..., embed=True)):
+        """verdict "yes": this is that pet (confirms it); "no": it isn't."""
+        p = pets_or_503()
+        try:
+            (p.confirm if verdict == "yes" else p.reject)(lid, pet_id)
+        except KeyError:
+            raise HTTPException(404)
+        return {"ok": True}
+
+    @app.post("/api/detections/{det_id}/pet")
+    async def detection_pet(det_id: int, pet_id: int = Body(..., embed=True)):
+        """'This is <pet>' from the event player. pet_id 0: 'not them' (undo a wrong mark or match)."""
+        if pet_id == 0:
+            return {"changed": await asyncio.to_thread(pets_or_503().unmark_detection, det_id)}
+        lid = await asyncio.to_thread(pets_or_503().enrol_detection, det_id, pet_id)
+        if not lid:
+            raise HTTPException(422, "this animal is too small or has no snapshot to learn from")
+        return {"look_id": lid}
 
     @app.get("/api/vehicles")
     def vehicles(status: str = "all", limit: int = Query(200, le=2000)):

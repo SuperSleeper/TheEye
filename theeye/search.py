@@ -170,6 +170,7 @@ class Searcher:
         self.embedder = embedder
         self.animals = animals           # SubtypeClassifier: the animal / breed / species names it can give
         self.people = None               # theeye.people.People: names of recognised people
+        self.pets = None                 # theeye.pets.Pets: names of recognised pets
 
     # --------------------------------------------------------------- LLM
     def interpret(self, q: str) -> dict[str, Any]:
@@ -218,15 +219,17 @@ class Searcher:
         return _apply_certainty(q, f)
 
     def _apply_people(self, q: str, f: dict) -> None:
-        """A family member's name ("rylan", "rylan yesterday") filters on who was recognised."""
-        if not self.people:
+        """A family member's or pet's name ("rylan", "rylan yesterday") filters on who was recognised."""
+        names = (list(self.people.names().values()) if self.people else []) + \
+            (list(self.pets.names().values()) if self.pets else [])
+        if not names:
             return
         low = " " + re.sub(r"[^a-z0-9 ]+", " ", q.lower()) + " "
-        found = [n for n in self.people.names().values() if re.search(rf"\b{re.escape(n.lower())}('?s)?\b", low)]
+        found = [n for n in names if re.search(rf"\b{re.escape(n.lower())}('?s)?\b", low)]
         if not found:
             return
         f["people"] = found
-        f["labels"] = [l for l in (f.get("labels") or []) if l != "person"]
+        f["labels"] = [l for l in (f.get("labels") or []) if l not in ("person", "dog", "cat")]
         vis = (f.get("visual") or "").lower()
         for n in found:
             vis = re.sub(rf"\b{re.escape(n.lower())}('?s)?\b", " ", vis)
