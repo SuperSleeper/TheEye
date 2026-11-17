@@ -29,6 +29,7 @@ STILL_OK = VEHICLES | {"bicycle", "suitcase", "backpack", "handbag"}
 TRACK_TTL = 3.0          # seconds unseen before a track is finalized
 PLATE_RETRY_MAX_S = 30.0          # slowest retry for a vehicle whose plate hasn't read confidently
 IOU_MATCH = 0.3
+NEAR_MATCH = 1.0        # no overlap: a same-size box whose centre moved up to this many box sizes is the same object
 TRAVEL_SHARE = 0.5       # the box's centre must move this share of the box's size to count as travel
 PARK_IOU = 0.8           # box overlap with where it last moved; above this counts as "hasn't moved"
 STILL_SPOT_IOU = 0.7
@@ -91,6 +92,49 @@ def _iou(a: list[float], b: list[float]) -> float:
     inter = ix * iy
     u = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
     return inter / u if u > 0 else 0.0
+
+
+def _near(a: list[float], b: list[float]) -> Optional[float]:
+    """How far b's centre is from a's, in box sizes, if they're about the same size; else None."""
+    sa = max(a[2] - a[0], a[3] - a[1], 1e-6)
+    sb = max(b[2] - b[0], b[3] - b[1], 1e-6)
+    if not 0.5 <= sb / sa <= 2.0:
+        return None
+    dx = (a[0] + a[2] - b[0] - b[2]) / 2
+    dy = (a[1] + a[3] - b[1] - b[3]) / 2
+    d = (dx * dx + dy * dy) ** 0.5 / max(sa, sb)
+    return d if d <= NEAR_MATCH else None
+
+
+def _match(tracks: dict, dets: list) -> dict[int, str]:
+    """Detection index -> the track it continues. Overlap first, for every detection (best first); then, for
+    what's left, the nearest same-size box: a small or fast object (a person far down the street, a passing
+    car) can move past its own box between checks, and used to start a new track on every frame."""
+    out: dict[int, str] = {}
+    free = set(tracks)
+    for i, (label, _, nb, _) in enumerate(dets):
+        best, best_v = None, IOU_MATCH
+        for k in free:
+            if tracks[k].label == label:
+                v = _iou(tracks[k].bbox, nb)
+                if v > best_v:
+                    best, best_v = k, v
+        if best is not None:
+            out[i] = best
+            free.discard(best)
+    for i, (label, _, nb, _) in enumerate(dets):
+        if i in out:
+            continue
+        best, best_d = None, None
+        for k in free:
+            if tracks[k].label == label:
+                d = _near(tracks[k].bbox, nb)
+                if d is not None and (best_d is None or d < best_d):
+                    best, best_d = k, d
+        if best is not None:
+            out[i] = best
+            free.discard(best)
+    return out
 
 
 class Detector:
@@ -289,20 +333,14 @@ class Detector:
             dets.append((label, float(b.conf[0]), nb, zids))
 
         cam_tracks = self.tracks.setdefault(cam, {})
-        unmatched = set(cam_tracks)
+        dets.sort(key=lambda d: -d[1])
+        matched = _match(cam_tracks, dets)
         seen: list[Track] = []
         new: list[Track] = []
         upd: list[Track] = []
         plate_jobs: list[Track] = []
-        for label, conf, nb, zids in sorted(dets, key=lambda d: -d[1]):
-            best, best_iou = None, IOU_MATCH
-            for k in unmatched:
-                t = cam_tracks[k]
-                if t.label != label:
-                    continue
-                v = _iou(t.bbox, nb)
-                if v > best_iou:
-                    best, best_iou = t, v
+        for i, (label, conf, nb, zids) in enumerate(dets):
+            best = cam_tracks[matched[i]] if i in matched else None
             if best is None:
                 self._seq += 1
                 best = Track(f"{cam}:{int(ts)}:{self._seq}", cam, label, nb, conf, ts, ts)
@@ -311,8 +349,6 @@ class Detector:
                 if self._was_parked_here(cam, label, nb, ts):   # reappeared in a known parked spot
                     best.still_since = ts - self.cfg.stationary_seconds
                 cam_tracks[best.key] = best
-            else:
-                unmatched.discard(best.key)
             best.bbox, best.conf, best.last_ts, best.hits = nb, conf, ts, best.hits + 1
             # Driving = the box left its anchor on two checks in a row (one bad box isn't travel). The anchor
             # then moves along, so a car that drove once and has sat since counts as sitting again: a parked car

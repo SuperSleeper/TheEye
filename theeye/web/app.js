@@ -139,11 +139,13 @@ function drawOverlay(cv, img, st, camId) {
   for (const t of OV.ai ? st.tracks.filter(t => !t.parked) : []) {
     const [x1, y1, x2, y2] = t.bbox;
     // Ignored by rules: never seen moving (grey dotted)
-    const ignored = t.confirmed === false, col = ignored ? '#9aa3ad' : '#ffcc00';
+    const ignored = t.confirmed === false && t.hits >= 2, col = ignored ? '#9aa3ad' : '#ffcc00';
     ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.setLineDash(ignored ? [2, 3] : []);
     ctx.strokeRect(ox + x1 * dw, oy + y1 * dh, (x2 - x1) * dw, (y2 - y1) * dh);
     ctx.setLineDash([]);
-    const tag = t.confirmed === false ? ` ${(t.conf * 100).toFixed(0)}% · no motion` : ` ${(t.conf * 100).toFixed(0)}%`;
+    // Not counted by rules: just appeared (one sighting so far), standing still 20 s+, or never seen moving
+    const why = t.confirmed !== false ? '' : t.hits < 2 ? '' : t.still_spot ? ' · still' : ' · no motion';
+    const tag = ` ${(t.conf * 100).toFixed(0)}%${why}`;
     const label = `${t.label}${tag}${t.plate ? ' ' + t.plate : ''}`;
     ctx.fillStyle = col; ctx.fillRect(ox + x1 * dw, oy + y1 * dh - 16, ctx.measureText(label).width + 8, 16);
     ctx.fillStyle = '#000'; ctx.fillText(label, ox + x1 * dw + 4, oy + y1 * dh - 4);
