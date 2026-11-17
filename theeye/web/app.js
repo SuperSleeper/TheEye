@@ -70,7 +70,10 @@ async function boot() {
   zonesCache = await api('/api/zones');
   refreshCameraSelects();
   setInterval(loadStats, 3000); loadStats();
-  showTab(cameras.length ? (location.hash.slice(1) || 'live') : 'setup');   // first run → configurator
+  // #event/<id> or #event/<id>@<seconds>: a link straight to a recording (e.g. shared, or from a report)
+  const link = location.hash.match(/^#event\/(\d+)(?:@([\d.]+))?$/);
+  showTab(cameras.length ? (link ? 'events' : location.hash.slice(1) || 'live') : 'setup');   // first run → configurator
+  if (link) openFromList([{ id: +link[1], seek: link[2] ? +link[2] : undefined }], 0, 'link');
 }
 
 async function loadStats() {
