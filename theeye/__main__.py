@@ -51,7 +51,9 @@ def main() -> None:
         else:                       # kept next to the config (the install folder), never in the repo
             from .tls import ensure_cert
             cert, key = ensure_cert(cfg_path.parent / "tls")
-        tls = {"ssl_certfile": str(cert), "ssl_keyfile": str(key)}
+        from .tlsredirect import make_protocol       # TLS on the port, and plain http there redirects to https
+        # asyncio's own loop: uvloop starts reading a connection even while it's paused, which defeats the peek
+        tls = {"http": make_protocol(str(cert), str(key)), "loop": "asyncio"}
     logging.info("web UI on %s://%s:%d", "https" if srv.https else "http",
                  "localhost" if srv.host in ("0.0.0.0", "::") else srv.host, srv.port)
     if srv.mcp_port:                 # read-only MCP for a local AI assistant (loopback, hook-token guarded)
