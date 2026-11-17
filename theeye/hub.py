@@ -329,10 +329,39 @@ class Hub:
         if not self.animals or emb is None or label not in ANIMAL_LABELS:
             return None
         try:
-            return self.animals.classify(label, np.frombuffer(emb, dtype=np.float32))
+            vec = np.frombuffer(emb, dtype=np.float32)
+            return self._own_pet(label, vec) or self.animals.classify(label, vec)
         except Exception:  # noqa: BLE001
             log.exception("animal classification failed")
             return None
+
+    PET_REFS_TTL = 1800
+    PET_MIN_REFS = 10
+
+    def _own_pet(self, label: str, vec: np.ndarray):
+        """("dog", <breed>, similarity) if this dog/cat looks like one of your own pets' past sightings."""
+        pets = [p.strip().lower() for p in self.cfg.animals.pets if p.strip()]
+        if label not in ("cat", "dog") or not pets:
+            return None
+        now = time.time()
+        cache = getattr(self, "_pet_refs", None)
+        if cache is None or now - cache[0] > self.PET_REFS_TTL or cache[1] != pets:
+            refs = {}
+            for p in pets:            # only sightings both models agreed were a dog of this breed, sure of it
+                rows = self.db.all("SELECT embedding FROM detections WHERE label='dog' AND kind IS NULL AND subtype=?"
+                                   " AND subtype_conf>=0.7 AND embedding IS NOT NULL ORDER BY first_ts DESC LIMIT 300",
+                                   (p,))
+                if len(rows) >= self.PET_MIN_REFS:
+                    m = np.stack([np.frombuffer(r["embedding"], dtype=np.float32) for r in rows])
+                    refs[p] = m / np.linalg.norm(m, axis=1, keepdims=True)
+            cache = self._pet_refs = (now, pets, refs)
+        v = vec / (np.linalg.norm(vec) or 1.0)
+        best = None
+        for p, m in cache[2].items():
+            s = float(np.sort(m @ v)[-5])           # 5th closest: one look-alike picture isn't enough
+            if s >= self.cfg.animals.pet_match and (best is None or s > best[2]):
+                best = ("dog", p, s)
+        return best
 
     # ------------------------------------------------------- delivery services
     def _delivery_on(self, label: str) -> bool:

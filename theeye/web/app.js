@@ -644,6 +644,15 @@ $('#pl-prev').onclick = () => stepEvent(-1);
 $('#pl-next').onclick = () => stepEvent(1);
 $('#player').addEventListener('keydown', e => {
   if (e.target.matches('input, textarea, select') || e.altKey || e.ctrlKey || e.metaKey) return;
+  if (e.key === '+' || e.key === '=') { e.preventDefault(); ZOOM.by(1.5); return; }
+  if (e.key === '-' || e.key === '_') { e.preventDefault(); ZOOM.by(1 / 1.5); return; }
+  if (e.key === '0') { e.preventDefault(); ZOOM.reset(); return; }
+  if (ZOOM.z > 1 && e.key.startsWith('Arrow') && e.shiftKey) {     // shift+arrows pan while zoomed
+    e.preventDefault();
+    const d = 0.1 / ZOOM.z;
+    ZOOM.pan(e.key === 'ArrowLeft' ? -d : e.key === 'ArrowRight' ? d : 0, e.key === 'ArrowUp' ? -d : e.key === 'ArrowDown' ? d : 0);
+    return;
+  }
   if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
     e.preventDefault();                                   // instead of the video's own 5 s seek
     $(e.key === 'ArrowLeft' ? '#pl-prev' : '#pl-next').click();
@@ -699,6 +708,7 @@ async function openEvent(id, seek) {
   $('#pl-title').textContent = `${camName(e.camera_id)} — ${fmtTime(e.start_ts)} — ${e.rule_name || e.source}`;
   const v = $('#pl-video');
   boostAudio(v);
+  ZOOM.reset();
   if (e.clip_path) {
     v.src = `/media/${e.clip_path}`;
     v.onloadedmetadata = () => { v.currentTime = seek ?? e.play_from ?? e.clip_offset; v.play().catch(() => {}); };
@@ -732,6 +742,94 @@ async function openEvent(id, seek) {
   if (!$('#player').open) $('#player').showModal();
 }
 $('#pl-close').onclick = () => $('#player').close();
+
+// ---- playback zoom. Chrome/Edge crop the picture with object-view-box, so the video's own controls stay normal
+// size; other browsers scale the video inside its frame (controls hidden while zoomed; double-click or 1× resets).
+const ZOOM = (() => {
+  const v = $('#pl-video'), stage = v.parentElement;
+  const crop = CSS.supports('object-view-box', 'inset(0% 0% 0% 0%)');
+  const st = { z: 1, x: 0, y: 0 };                       // scale, and the view's left/top as a share of the picture
+  const MAX = 8;
+  const clamp = () => {
+    st.z = Math.min(MAX, Math.max(1, st.z));
+    const w = 1 / st.z;
+    st.x = Math.min(1 - w, Math.max(0, st.x)); st.y = Math.min(1 - w, Math.max(0, st.y));
+  };
+  const apply = () => {
+    clamp();
+    const w = 1 / st.z, pct = n => (n * 100).toFixed(3) + '%';
+    if (crop) v.style.objectViewBox = st.z > 1 ? `inset(${pct(st.y)} ${pct(1 - st.x - w)} ${pct(1 - st.y - w)} ${pct(st.x)})` : '';
+    else {
+      v.style.transformOrigin = '0 0';
+      v.style.transform = st.z > 1 ? `scale(${st.z}) translate(${-st.x * 100}%, ${-st.y * 100}%)` : '';
+      v.controls = st.z === 1;
+    }
+    stage.classList.toggle('zoomed', st.z > 1);
+    $('#pl-zreset').textContent = st.z > 1 ? `${st.z.toFixed(1).replace(/\.0$/, '')}×` : '1×';
+    $('#pl-zout').disabled = st.z <= 1; $('#pl-zin').disabled = st.z >= MAX;
+  };
+  // Where a screen point falls on the shown part of the picture (0..1 each way), allowing for letterboxing.
+  const at = (cx, cy) => {
+    const r = v.getBoundingClientRect();
+    const bw = crop ? r.width : r.width / st.z, bh = crop ? r.height : r.height / st.z;
+    const ar = (v.videoWidth / v.videoHeight) || (bw / bh);
+    let w = bw, h = bw / ar; if (h > bh) { h = bh; w = bh * ar; }
+    const left = crop ? r.left + (bw - w) / 2 : stage.getBoundingClientRect().left + (bw - w) / 2;
+    const top = crop ? r.top + (bh - h) / 2 : stage.getBoundingClientRect().top + (bh - h) / 2;
+    return { u: Math.min(1, Math.max(0, (cx - left) / w)), t: Math.min(1, Math.max(0, (cy - top) / h)), w, h };
+  };
+  const zoomAt = (f, cx, cy) => {                         // keep the picture point under the pointer in place
+    const p = cx == null ? { u: 0.5, t: 0.5 } : at(cx, cy);
+    const px = st.x + p.u / st.z, py = st.y + p.t / st.z;
+    st.z *= f; clamp();
+    st.x = px - p.u / st.z; st.y = py - p.t / st.z; apply();
+  };
+  const api = {
+    get z() { return st.z; },
+    by: f => zoomAt(f),
+    reset: () => { st.z = 1; st.x = st.y = 0; apply(); },
+    pan: (dx, dy) => { st.x += dx; st.y += dy; apply(); },
+  };
+  stage.addEventListener('wheel', e => {
+    if (e.target !== v) return;
+    e.preventDefault();
+    zoomAt(Math.exp(-e.deltaY * (e.deltaMode ? 0.05 : 0.0025)), e.clientX, e.clientY);
+  }, { passive: false });
+  // Drag to pan (mouse or one finger); two fingers pinch. A drag doesn't count as a click (play/pause).
+  const pts = new Map(); let drag = null, pinch = null, moved = false;
+  v.addEventListener('pointerdown', e => {
+    const r = v.getBoundingClientRect();
+    if (crop && e.clientY > r.bottom - 48) return;        // leave the control bar alone
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pts.size === 2) {
+      const [a, b] = [...pts.values()];
+      pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), z: st.z }; drag = null;
+    } else if (st.z > 1) { drag = { x: e.clientX, y: e.clientY, sx: st.x, sy: st.y }; moved = false; v.setPointerCapture(e.pointerId); }
+  });
+  v.addEventListener('pointermove', e => {
+    if (!pts.has(e.pointerId)) return;
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinch && pts.size === 2) {
+      const [a, b] = [...pts.values()];
+      const f = (pinch.z * Math.hypot(a.x - b.x, a.y - b.y) / pinch.d) / st.z;
+      zoomAt(f, (a.x + b.x) / 2, (a.y + b.y) / 2); moved = true;
+    } else if (drag) {
+      const { w, h } = at(e.clientX, e.clientY);
+      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      if (Math.abs(dx) + Math.abs(dy) > 4) moved = true;
+      st.x = drag.sx - dx / w / st.z; st.y = drag.sy - dy / h / st.z; apply();
+    }
+  });
+  const up = e => { pts.delete(e.pointerId); if (pts.size < 2) pinch = null; if (!pts.size) drag = null; };
+  v.addEventListener('pointerup', up); v.addEventListener('pointercancel', up);
+  v.addEventListener('click', e => { if (moved) { e.preventDefault(); e.stopImmediatePropagation(); moved = false; } }, true);
+  v.addEventListener('dblclick', e => { if (st.z > 1) { e.preventDefault(); api.reset(); } });
+  $('#pl-zin').onclick = () => api.by(1.5);
+  $('#pl-zout').onclick = () => api.by(1 / 1.5);
+  $('#pl-zreset').onclick = () => api.reset();
+  apply();
+  return api;
+})();
 $('#player').addEventListener('close', () => $('#pl-video').pause());
 
 // ---------------------------------------------------------------- vehicles (repeat visitors)
@@ -1674,7 +1772,7 @@ async function loadPeople() {
   const st = r.stats || {};
   $('#people-stats').textContent = !r.models ? 'face models missing: recognition off'
     : `${st.faces || 0} faces found this run` + (st.scan_left ? ` · ${st.scan_left} past people still to look through` : '');
-  const face = f => `<img class="face" loading="lazy" src="/media/${esc(f.path)}" title="${esc(camName(f.camera_id))} · ${esc(fmtTime(f.ts))}">`;
+  const face = f => faceImg(f);
   const confirmedFace = (f, p) => `<span class="cf" data-fid="${f.id}">${face(f)}<button type="button" class="cf-x"
     title="Not ${esc(p.name)}: remove this photo (it won't be suggested for ${esc(p.name)} again)" aria-label="Remove photo">✕</button></span>`;
   $('#people-list').innerHTML = r.people.map(p => `
@@ -1696,19 +1794,31 @@ async function loadPeople() {
     try { await api(`/api/faces/${cf.dataset.fid}`, { method: 'POST', body: { person_id: pid, verdict: 'no' } }); cf.remove(); setTimeout(loadPeople, 1500); }
     catch (err) { b.disabled = false; alertInline(b, 'Failed: ' + err.message); }
   });
+  bindFaceClicks($('#people-list'));
   for (const p of r.people) loadSuggestions(p);
+}
+// A face picture plays the recording it came from, a moment before the face was seen.
+function faceImg(f) {
+  return `<img class="face${f.event_id ? ' playable' : ''}" loading="lazy" src="/media/${esc(f.path)}"
+    ${f.event_id ? `data-ev="${f.event_id}" data-seek="${f.seek}"` : ''}
+    title="${esc(camName(f.camera_id))} · ${esc(fmtTime(f.ts))}${f.event_id ? ' · click to play' : ' · recording no longer kept'}">`;
+}
+function bindFaceClicks(root) {
+  $$('img.face[data-ev]', root).forEach(img => img.onclick = () =>
+    openFromList([{ id: +img.dataset.ev, seek: +img.dataset.seek }], 0, 'people'));
 }
 async function loadSuggestions(p) {
   const box = $(`#people-list .sugg[data-pid="${p.id}"]`);
   const s = await api(`/api/people/${p.id}/suggestions?limit=40`);
   box.innerHTML = s.map(f => `
     <div class="sg" data-fid="${f.id}">
-      <img class="face" loading="lazy" src="/media/${esc(f.path)}">
+      ${faceImg(f)}
       <div class="small muted">${esc(camName(f.camera_id))}<br>${esc(new Date(f.ts * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}</div>
       <div class="small">${Math.round(f.score * 100)}% ${f.status === 'auto' ? '· tagged' : ''}</div>
       <div class="row" style="gap:4px"><button type="button" data-v="yes" title="Yes, this is ${esc(p.name)}">✓</button>
         <button type="button" data-v="no" title="No, not ${esc(p.name)}">✗</button></div>
     </div>`).join('') || `<span class="muted small">No suggestions${p.n_confirmed ? '' : ' until a face is confirmed'}. More appear as past recordings are looked through.</span>`;
+  bindFaceClicks(box);
   $$('.sg button', box).forEach(b => b.onclick = async () => {
     const sg = b.closest('.sg');
     await api(`/api/faces/${sg.dataset.fid}`, { method: 'POST', body: { person_id: p.id, verdict: b.dataset.v } });

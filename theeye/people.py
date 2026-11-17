@@ -172,11 +172,22 @@ class People:
                 out.append({k: r[k] for k in ("id", "detection_id", "camera_id", "ts", "size", "path", "status")}
                            | {"score": round(s, 3)})
         out.sort(key=lambda x: -x["score"])
-        return out[:limit]
+        return self._with_clip(out[:limit])
+
+    def _with_clip(self, faces: list[dict]) -> list[dict]:
+        """Add the recording each face is in (event_id) and where in its clip the face was seen (seek), so a click
+        on the picture can play it."""
+        for f in faces:
+            e = self.db.one("SELECT e.id, e.start_ts, e.clip_offset FROM event_links l JOIN events e ON e.id=l.event_id"
+                            " WHERE l.kind='detection' AND l.ref_id=? AND e.clip_path IS NOT NULL"
+                            " ORDER BY e.start_ts LIMIT 1", (f["detection_id"],))
+            f["event_id"] = e["id"] if e else None
+            f["seek"] = max(0.0, e["clip_offset"] + f["ts"] - e["start_ts"] - 2) if e else None
+        return faces
 
     def confirmed(self, pid: int) -> list[dict]:
-        return self.db.all("SELECT id, detection_id, camera_id, ts, size, path FROM faces"
-                           " WHERE person_id=? AND status='confirmed' ORDER BY ts DESC", (pid,))
+        return self._with_clip(self.db.all("SELECT id, detection_id, camera_id, ts, size, path FROM faces"
+                                           " WHERE person_id=? AND status='confirmed' ORDER BY ts DESC", (pid,)))
 
     # ------------------------------------------------------------ tags
     def _set_who(self, det_id: int, name: Optional[str], old: Optional[str] = None) -> None:

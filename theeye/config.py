@@ -192,6 +192,11 @@ class AnimalsConfig(BaseModel):
     # Step 1: which animal it really is. A squirrel the detector called "bird" is caught here.
     kinds: list[str] = Field(default_factory=lambda: [
         "bird", "squirrel", "cat", "dog", "raccoon", "opossum", "rabbit", "fox", "coyote", "deer", "skunk"])
+    # Your own pets, by breed name (e.g. [pomeranian]). CLIP's generic descriptions can be confidently wrong about
+    # one particular animal (an orange Pomeranian reads as "cat"), so a dog/cat that looks like this breed's own
+    # past confident sightings (detector and CLIP both said dog, and this breed) is named that, whatever else.
+    pets: list[str] = Field(default_factory=list)
+    pet_match: float = Field(0.75, ge=0.5, le=0.99)       # similarity to the pet's 5th-closest past sighting
     # Step 2: which kind of bird / dog / cat.
     birds: list[str] = Field(default_factory=lambda: [
         "crow", "raven", "hawk", "owl", "pigeon", "mourning dove", "seagull", "sparrow", "finch", "robin",

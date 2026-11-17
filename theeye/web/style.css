@@ -284,3 +284,11 @@ select.who { font-size: 12px; padding: 1px 4px; margin-left: 4px; }
   background: rgba(0,0,0,.65); border-color: transparent; opacity: 0; }
 .cf:hover .cf-x, .cf-x:focus { opacity: 1; }
 @media (hover: none) { .cf-x { opacity: 1; } }
+\nimg.face.playable { cursor: pointer; }\nimg.face.playable:hover { outline: 2px solid var(--accent, #4ea1ff); }\n
+.pl-zoom { display: inline-flex; gap: 2px; margin-right: 6px; }
+.pl-zoom button { min-width: 28px; padding: 2px 6px; }
+#pl-zreset { min-width: 38px; }
+.pl-stage { overflow: hidden; }
+.pl-stage.zoomed #pl-video { cursor: grab; touch-action: none; }
+.pl-stage.zoomed #pl-video:active { cursor: grabbing; }
+#pl-video { touch-action: pan-y; }
