@@ -345,3 +345,6 @@ html:has(dialog#player[open]) { overflow: hidden; }   /* no page scrollbar besid
 .stor td.share .small { white-space: nowrap; }
 .ev-more { display: flex; justify-content: center; padding: 16px 0 24px; }
 #ev-more[hidden], #ev-end[hidden] { display: none; }
+.plate-edit.chip { border: 0; cursor: pointer; line-height: inherit; }
+.plate-form { display: inline-flex; gap: 4px; align-items: center; }
+.plate-form input { width: 7.5em; padding: 1px 4px; font-family: ui-monospace, monospace; text-transform: uppercase; }

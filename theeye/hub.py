@@ -124,6 +124,7 @@ class Hub:
             threading.Thread(target=self.pets.scan_past, name="pet-scan", daemon=True).start()
         if self.cars:
             threading.Thread(target=self.cars.scan_past, name="car-scan", daemon=True).start()
+            threading.Thread(target=self.cars.snap_past, name="car-plates", daemon=True).start()
         threading.Thread(target=self._repair_interrupted, name="clip-repair", daemon=True).start()
         if self.exhaust:
             self.exhaust.start()
@@ -307,6 +308,7 @@ class Hub:
         if animal:
             t.kind, t.subtype = animal[0], animal[1]
         snap = self.detector.save_snapshot(t) if self.detector else None    # after: the picture shows the better name
+        t.plate = self.known_plate(t.plate)
         self.db.execute(
             "UPDATE detections SET confidence=?, last_ts=?, bbox=?, zones=?, plate=?, plate_conf=?,"
             " snapshot_path=COALESCE(?, snapshot_path), embedding=COALESCE(?, embedding), moving=? WHERE id=?",
@@ -480,6 +482,43 @@ class Hub:
                 labels = (set(jload(r["labels"], [])) | add) - ({label} if drop else set())
                 self.db.execute("UPDATE events SET labels=? WHERE id=?", (json.dumps(sorted(labels)), eid))
 
+    def known_plate(self, plate: Optional[str]) -> Optional[str]:
+        """A plate read one OCR slip away from one of your vehicles' plates (7ABG123 for 7ABC123) is that plate."""
+        return self.cars.known_plate(plate) if self.cars and plate else plate
+
+    def set_plate(self, det_id: int, plate: Optional[str], conf: Optional[float] = 1.0) -> None:
+        """Give a detection a (corrected) plate, and swap it in the recordings it's in."""
+        d = self.db.one("SELECT plate FROM detections WHERE id=?", (det_id,))
+        if d is None:
+            raise KeyError(det_id)
+        old = d["plate"]
+        self.db.execute("UPDATE detections SET plate=?, plate_conf=? WHERE id=?", (plate, conf if plate else None, det_id))
+        for r in self.db.all("SELECT event_id FROM event_links WHERE kind='detection' AND ref_id=?", (det_id,)):
+            self.swap_event_plate(r["event_id"], old, plate, keep_if_other=det_id)
+
+    def swap_event_plate(self, eid: int, old: Optional[str], new: Optional[str], keep_if_other: Optional[int] = None) -> None:
+        """Replace plate `old` with `new` in one recording's plates (`old` stays if another of its detections, other
+        than keep_if_other, still has it)."""
+        if old and keep_if_other is not None and self.db.one(
+                "SELECT 1 FROM event_links l JOIN detections d ON d.id=l.ref_id AND l.kind='detection'"
+                " WHERE l.event_id=? AND d.plate=? AND d.id<>?", (eid, old, keep_if_other)):
+            old = None
+        with self._lock:
+            ev = next((e for e in self._open_events.values() if e.id == eid), None)
+            plates = set(ev.plates) if ev else set(jload((self.db.one("SELECT plates FROM events WHERE id=?",
+                                                                      (eid,)) or {}).get("plates"), []))
+            before = set(plates)
+            plates.discard(old)
+            if new:
+                plates.add(new)
+            if plates == before:
+                return
+            if ev:
+                ev.plates = plates
+                self._flush_event_meta(ev)
+            else:
+                self.db.execute("UPDATE events SET plates=? WHERE id=?", (json.dumps(sorted(plates)), eid))
+
     def rename_animal(self, det_id: int, kind: str, conf: float = 1.0) -> None:
         """Rename an animal sighting (named by hand, or after an example) and swap the old name for the new one on
         its recordings, unless something else in a recording still has the old name."""
@@ -587,7 +626,7 @@ class Hub:
                     self._webhook(rule.webhook, ev, rule.name)
             ev.last_active = now
             new_labels = {t["label"] for t in st.tracks} - ev.labels
-            new_plates = {t["plate"] for t in st.tracks if t.get("plate")} - ev.plates
+            new_plates = {self.known_plate(t["plate"]) for t in st.tracks if t.get("plate")} - ev.plates
             if new_labels or new_plates:
                 ev.labels |= new_labels
                 ev.plates |= new_plates

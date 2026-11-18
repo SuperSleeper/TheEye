@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from typing import Optional
 
 import numpy as np
@@ -74,6 +75,35 @@ class Cars(NamedLooks):
             return None, s               # looks like it, but the plate says it's another vehicle
         return pid, s
 
+    def known_plate(self, plate: Optional[str]) -> Optional[str]:
+        """Your vehicle's plate when `plate` is a read of it with one OCR slip (7ABG123 for 7ABC123), else `plate`."""
+        p = clean_plate(plate)
+        if not p or len(p) < PLATE_MIN_LEN:
+            return plate
+        with self._lock:
+            mine = [m for m in self._plates.values() if _close_plates(m, p)]
+        return mine[0] if len(mine) == 1 else plate
+
+    def snap_past(self) -> int:
+        """Past reads of your vehicles' plates with one slip: corrected, in sightings and in recordings."""
+        n = 0
+        for d in self.db.all("SELECT id, plate FROM detections WHERE plate IS NOT NULL AND length(plate) >= ?",
+                             (PLATE_MIN_LEN,)):
+            fixed = self.known_plate(d["plate"])
+            if fixed != d["plate"]:
+                self.db.execute("UPDATE detections SET plate=? WHERE id=?", (fixed, d["id"]))
+                n += 1
+        for e in self.db.all("SELECT id, plates FROM events WHERE plates IS NOT NULL AND plates <> '[]'"):
+            for p in jload(e["plates"], []):
+                fixed = self.known_plate(p)
+                if fixed != p:
+                    self.hub.swap_event_plate(e["id"], p, fixed)
+                    n += 1
+        if n:
+            log.info("plates: %d past reads corrected to your vehicles' plates", n)
+            self.rematch_all()
+        return n
+
     def set_plate(self, pid: int, plate: Optional[str], source: str = "you") -> Optional[str]:
         """Type in or correct a vehicle's plate (empty clears it). Returns the stored plate."""
         if pid not in self._names:
@@ -82,8 +112,14 @@ class Cars(NamedLooks):
         self.db.execute(f"UPDATE {self.REG} SET plate=?, plate_src=? WHERE id=?",
                         (plate, source if plate else None, pid))
         self.reload()
-        self._rematch_soon()
+        threading.Thread(target=self.snap_past, name="car-plates", daemon=True).start()   # then re-matches
         return plate
+
+    def on_plate_changed(self, det_id: int) -> None:
+        """A sighting's plate was corrected by hand: look again at which vehicle it is."""
+        row = self.db.one(f"SELECT *, {self.OWNER} AS owner FROM {self.LOOKS} WHERE detection_id=?", (det_id,))
+        if row:
+            self._match(row)
 
     def on_confirm(self, row, pid: int) -> None:
         # Its first confirmed sighting with a sure plate gives it a plate, if you haven't typed one in.

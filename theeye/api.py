@@ -744,6 +744,21 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
             raise HTTPException(404)
         return {"ok": True}
 
+    @app.put("/api/detections/{det_id}/plate")
+    def detection_plate(det_id: int, plate: Optional[str] = Body(None, embed=True)):
+        """Correct the plate read on one sighting (empty: it has none)."""
+        from .cars import clean_plate
+        plate = clean_plate(plate)
+        if plate and len(plate) > 12:
+            raise HTTPException(422, "plate too long")
+        try:
+            hub.set_plate(det_id, plate)
+        except KeyError:
+            raise HTTPException(404)
+        if hub.cars:
+            hub.cars.on_plate_changed(det_id)
+        return {"plate": plate}
+
     @app.post("/api/detections/{det_id}/car")
     async def detection_car(det_id: int, car_id: int = Body(..., embed=True)):
         """'This is <vehicle>' from the event player. car_id 0: 'not it' (undo a wrong mark or match)."""

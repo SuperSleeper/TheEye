@@ -755,7 +755,10 @@ async function openEvent(id, seek) {
       : '<p class="muted">No clip (recording disabled, pruned, or still pending).</p>'}
     <div><b>Detections</b> (click to jump)<br>${e.detections.map(d => `
       <span class="det" data-seek="${d.seek}">${d.snapshot_path ? `<img src="/media/${esc(d.snapshot_path)}">` : ''}
-      ${esc(animalName(d))} ${(d.confidence * 100).toFixed(0)}%${d.plate ? ` <span class="chip plate">${esc(d.plate)}</span>` : ''}
+      ${esc(animalName(d))} ${(d.confidence * 100).toFixed(0)}%${VEHICLE_LABELS.includes(d.label)
+        ? ` <button type="button" class="plate-edit${d.plate ? ' chip plate' : ' small-btn'}" data-det="${d.id}" data-plate="${esc(d.plate || '')}"
+            title="${d.plate ? 'Plate read by the camera: click to correct it' : 'No plate read: click to type it in'}">${d.plate ? esc(d.plate) + ' ✎' : '+ plate'}</button>`
+        : d.plate ? ` <span class="chip plate">${esc(d.plate)}</span>` : ''}
       ${d.label === 'person' && PEOPLE.list.length ? `<select class="who" data-det="${d.id}" title="Who is this? Teaches face recognition">
         <option value="">${d.who ? esc(d.who) : 'Who is this?'}</option>${d.who ? `<option value="0">Not ${esc(d.who)}</option>` : ''}${PEOPLE.list.filter(p => p.name !== d.who).map(p => `<option value="${p.id}">This is ${esc(p.name)}</option>`).join('')}</select>` : ''}
       ${['dog', 'cat', 'bird'].includes(d.label) && ANIMAL_KINDS.length ? `<select class="animal" data-det="${d.id}" title="What animal is this? Later look-alikes get the same name">
@@ -766,7 +769,23 @@ async function openEvent(id, seek) {
         <option value="">${d.who ? esc(d.who) : 'Which vehicle?'}</option>${d.who ? `<option value="0">Not ${esc(d.who)}</option>` : ''}${CARS.list.filter(p => p.name !== d.who).map(p => `<option value="${p.id}">This is ${esc(p.name)}</option>`).join('')}</select>` : ''}</span>`).join('') || '<span class="muted">none</span>'}</div>
     <div style="margin-top:6px"><b>Motion triggers</b>: ${e.motion.length} ${e.motion.map(m => `<span class="chip">zone ${m.zone_id || 'full'} · ${fmtDur(m.end_ts ? m.end_ts - m.start_ts : null)}</span>`).join(' ')}</div>
     <div style="margin-top:8px"><button id="pl-del" class="danger">Delete event</button></div>`;
-  $$('#pl-info .det').forEach(d => d.onclick = ev => { if (ev.target.closest('select')) return; v.currentTime = +d.dataset.seek; v.play(); });
+  $$('#pl-info .det').forEach(d => d.onclick = ev => { if (ev.target.closest('select, .plate-edit, .plate-form')) return; v.currentTime = +d.dataset.seek; v.play(); });
+  // Correct (or type in) the plate on one sighting: it replaces the read in the recording's tags and search.
+  $$('#pl-info .plate-edit').forEach(b => b.onclick = () => {
+    const f = document.createElement('form');
+    f.className = 'plate-form';
+    f.innerHTML = `<input name="plate" maxlength="12" autocomplete="off" value="${esc(b.dataset.plate)}" placeholder="Plate" aria-label="Licence plate">
+      <button type="submit" class="small-btn">Save</button><button type="button" class="small-btn" data-cancel>Cancel</button>`;
+    b.replaceWith(f);
+    f.plate.focus(); f.plate.select();
+    $('[data-cancel]', f).onclick = () => f.replaceWith(b);
+    f.onsubmit = async ev => {
+      ev.preventDefault();
+      $$('button', f).forEach(x => x.disabled = true);
+      try { await api(`/api/detections/${b.dataset.det}/plate`, { method: 'PUT', body: { plate: f.plate.value } }); openEvent(id, v.currentTime); }
+      catch (err) { $$('button', f).forEach(x => x.disabled = false); alertInline(f, 'Failed: ' + err.message); }
+    };
+  });
   $$('#pl-info select.who').forEach(s => s.onchange = async () => {
     if (s.value === '') return;
     const name = s.selectedOptions[0].textContent.replace(/^(This is|Not) /, '');

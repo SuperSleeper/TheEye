@@ -293,6 +293,7 @@ class PlateRefiner:
     def _save(self, ev: dict, dets: list[dict], results: list) -> None:
         """Give each vehicle in the recording the plate seen on it, and tag the recording with all of them."""
         db = self.hub.db
+        results = [(self.hub.known_plate(t), c, a, n, g) for t, c, a, n, g in results]   # your vehicles' plates
         off = ev["clip_offset"] - ev["start_ts"]
         for d in dets:
             a, b = d["first_ts"] + off, d["last_ts"] + off
