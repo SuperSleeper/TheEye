@@ -648,6 +648,25 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
             raise HTTPException(422, "this animal is too small or has no snapshot to learn from")
         return {"look_id": lid}
 
+    # ------------------------------------------------------------ animals named by example
+    @app.get("/api/animals/kinds")
+    def animal_kinds():
+        return {"kinds": hub.wildlife.kinds() if hub.wildlife else []}
+
+    @app.post("/api/detections/{det_id}/animal")
+    async def detection_animal(det_id: int, kind: str = Body(..., embed=True)):
+        """'This is a <kind>' from the event player: rename it and keep it as an example for look-alikes."""
+        if not hub.wildlife:
+            raise HTTPException(503, "animal naming isn't available")
+        kind = kind.strip().lower()
+        if kind not in hub.wildlife.kinds():
+            raise HTTPException(422, "unknown animal")
+        try:
+            await asyncio.to_thread(hub.wildlife.mark, det_id, kind)
+        except KeyError:
+            raise HTTPException(404)
+        return {"ok": True}
+
     @app.get("/api/vehicles")
     def vehicles(status: str = "all", limit: int = Query(200, le=2000)):
         where, args = ("", []) if status == "all" else ("WHERE status = ?", [status])

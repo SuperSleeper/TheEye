@@ -733,6 +733,8 @@ async function openEvent(id, seek) {
       ${esc(animalName(d))} ${(d.confidence * 100).toFixed(0)}%${d.plate ? ` <span class="chip plate">${esc(d.plate)}</span>` : ''}
       ${d.label === 'person' && PEOPLE.list.length ? `<select class="who" data-det="${d.id}" title="Who is this? Teaches face recognition">
         <option value="">${d.who ? esc(d.who) : 'Who is this?'}</option>${d.who ? `<option value="0">Not ${esc(d.who)}</option>` : ''}${PEOPLE.list.filter(p => p.name !== d.who).map(p => `<option value="${p.id}">This is ${esc(p.name)}</option>`).join('')}</select>` : ''}
+      ${['dog', 'cat', 'bird'].includes(d.label) && ANIMAL_KINDS.length ? `<select class="animal" data-det="${d.id}" title="What animal is this? Later look-alikes get the same name">
+        <option value="">What animal?</option>${ANIMAL_KINDS.filter(k => k !== (d.animal || d.label)).map(k => `<option value="${esc(k)}">This is a ${esc(k)}</option>`).join('')}</select>` : ''}
       ${(d.label === 'dog' || d.label === 'cat') && PETS.list.length ? `<select class="pet" data-det="${d.id}" title="Which pet is this? Teaches pet recognition">
         <option value="">${d.who ? esc(d.who) : 'Which pet?'}</option>${d.who ? `<option value="0">Not ${esc(d.who)}</option>` : ''}${PETS.list.filter(p => p.name !== d.who).map(p => `<option value="${p.id}">This is ${esc(p.name)}</option>`).join('')}</select>` : ''}</span>`).join('') || '<span class="muted">none</span>'}</div>
     <div style="margin-top:6px"><b>Motion triggers</b>: ${e.motion.length} ${e.motion.map(m => `<span class="chip">zone ${m.zone_id || 'full'} · ${fmtDur(m.end_ts ? m.end_ts - m.start_ts : null)}</span>`).join(' ')}</div>
@@ -744,6 +746,12 @@ async function openEvent(id, seek) {
     s.disabled = true;
     try { await api(`/api/detections/${s.dataset.det}/person`, { method: 'POST', body: { person_id: +s.value } }); openEvent(id, v.currentTime); }
     catch (err) { s.disabled = false; s.value = ''; alertInline(s, err.message.includes('422') ? `No clear face of ${name} here (too small, turned away or dark)` : 'Failed: ' + err.message); }
+  });
+  $$('#pl-info select.animal').forEach(s => s.onchange = async () => {
+    if (s.value === '') return;
+    s.disabled = true;
+    try { await api(`/api/detections/${s.dataset.det}/animal`, { method: 'POST', body: { kind: s.value } }); openEvent(id, v.currentTime); }
+    catch (err) { s.disabled = false; s.value = ''; alertInline(s, 'Failed: ' + err.message); }
   });
   $$('#pl-info select.pet').forEach(s => s.onchange = async () => {
     if (s.value === '') return;
@@ -1913,6 +1921,8 @@ $('#people-add').onsubmit = async ev => {
 
 // ---------------------------------------------------------------- pets (recognised by look)
 const PETS = { list: [] };
+let ANIMAL_KINDS = [];         // what "What animal?" in the player offers (animals.kinds in the config)
+api('/api/animals/kinds').then(r => { ANIMAL_KINDS = r.kinds; }).catch(() => {});
 async function refreshPets() { try { PETS.list = (await api('/api/pets')).pets; } catch { PETS.list = []; } }
 refreshPets();
 async function loadPets() {

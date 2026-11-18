@@ -42,6 +42,8 @@ def main() -> None:
     searcher.people = hub.people
     from .pets import Pets
     hub.pets = searcher.pets = Pets(hub)
+    from .wildlife import AnimalExamples
+    hub.wildlife = AnimalExamples(hub)
     from .exhaust import ExhaustWatch
     hub.exhaust = ExhaustWatch(hub, cfg_path.parent / "models")
     app = create_app(hub, searcher, cfg_path)

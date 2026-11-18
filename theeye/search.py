@@ -47,6 +47,10 @@ LABEL_WORDS = {
     "cats": ["cat"], "bird": ["bird"], "birds": ["bird"], "animal": ["dog", "cat", "bird"],
     "animals": ["dog", "cat", "bird"],
 }
+# Animals as people say them -> the name the closer look (or your naming) stores.
+ANIMAL_WORDS = {r"o?possums?": "opossum", r"coons?": "raccoon", r"racoons?": "raccoon", r"bunn(y|ies)": "rabbit",
+                r"skunks": "skunk", r"foxes": "fox", r"coyotes": "coyote", r"squirrels": "squirrel"}
+
 # Delivery services as people say them -> the stored tag (lower case for matching).
 SERVICE_KEYS = {s.lower() for s in SERVICES} | {"loud exhaust"}
 SERVICE_WORDS = {"amazon": "amazon", "prime": "amazon", "ups": "ups", "fedex": "fedex", "fed ex": "fedex",
@@ -244,6 +248,13 @@ class Searcher:
             if re.search(rf"\b{word}\b", low):
                 found.append(svc)
                 low = re.sub(rf"\b{word}\b", " ", low)
+        for word, name in ANIMAL_WORDS.items():      # "possum" -> opossum, "coon" -> raccoon
+            if re.search(rf"\b{word}\b", low):
+                found.append(name)
+                low = re.sub(rf"\b{word}\b", " ", low)
+        if self.animals and re.search(r"\b(wildlife|wild animals?|critters?|varmints?)\b", low):
+            found += sorted(self.animals.other_kinds() - {"squirrel", "bird"})   # the night visitors, not pets/birds
+            low = re.sub(r"\b(wildlife|wild animals?|critters?|varmints?)\b", " ", low)
         names = self.animals.names() if self.animals else set()
         for n in sorted(names, key=len, reverse=True):     # "german shepherd" before "shepherd"
             if re.search(rf"\b{re.escape(n)}(e?s)?\b", low):

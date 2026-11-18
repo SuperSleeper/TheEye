@@ -73,6 +73,7 @@ class Hub:
         self.delivery = DeliveryClassifier(self.embedder, cfg.delivery.min_confidence) if self.embedder else None
         self.people = None                         # theeye.people.People, set by __main__ (needs the models folder)
         self.pets = None                           # theeye.pets.Pets, set by __main__
+        self.wildlife = None                       # theeye.wildlife.AnimalExamples, set by __main__
         self.exhaust = None                        # theeye.exhaust.ExhaustWatch, set by __main__ (same)
         self.plates = PlateRefiner(self)
         self.detector: Optional[Detector] = None
@@ -336,6 +337,11 @@ class Hub:
                 self.pets.on_track_end(t)
             except Exception:  # noqa: BLE001
                 log.exception("pet recognition failed")
+        if self.wildlife:
+            try:
+                self.wildlife.on_track_end(t)       # after Pets: it reuses the animal's picture Pets just made
+            except Exception:  # noqa: BLE001
+                log.exception("naming an animal after examples failed")
 
     # -------------------------------------------------------------- animals
     def _classify_animal(self, label: str, emb: Optional[bytes]):
@@ -464,6 +470,36 @@ class Hub:
             r = self.db.one("SELECT labels FROM events WHERE id=?", (eid,))
             if r:
                 labels = (set(jload(r["labels"], [])) | add) - ({label} if drop else set())
+                self.db.execute("UPDATE events SET labels=? WHERE id=?", (json.dumps(sorted(labels)), eid))
+
+    def rename_animal(self, det_id: int, kind: str, conf: float = 1.0) -> None:
+        """Rename an animal sighting (named by hand, or after an example) and swap the old name for the new one on
+        its recordings, unless something else in a recording still has the old name."""
+        d = self.db.one("SELECT label, kind, subtype FROM detections WHERE id=?", (det_id,))
+        if not d:
+            return
+        label = d["label"]
+        old = {n for n in (d["kind"], d["subtype"]) if n} | ({label} if d["kind"] is None else set())
+        self.db.execute("UPDATE detections SET kind=?, subtype=NULL, subtype_conf=? WHERE id=?",
+                        (kind if kind != label else None, round(conf, 3), det_id))
+        new = {kind}
+        for row in self.db.all("SELECT event_id FROM event_links WHERE kind='detection' AND ref_id=?", (det_id,)):
+            eid = row["event_id"]
+            still = set()
+            for o in self.db.all("SELECT d.label, d.kind, d.subtype FROM event_links l JOIN detections d"
+                                 " ON d.id = l.ref_id AND l.kind = 'detection' WHERE l.event_id = ? AND d.id != ?",
+                                 (eid, det_id)):
+                still |= {n for n in (o["kind"], o["subtype"]) if n} | ({o["label"]} if o["kind"] is None else set())
+            drop = old - new - still
+            with self._lock:
+                ev = next((e for e in self._open_events.values() if e.id == eid), None)
+                if ev is not None:
+                    ev.labels = (ev.labels - drop) | new
+                    self._flush_event_meta(ev)
+                    continue
+            r = self.db.one("SELECT labels FROM events WHERE id=?", (eid,))
+            if r:
+                labels = (set(jload(r["labels"], [])) - drop) | new
                 self.db.execute("UPDATE events SET labels=? WHERE id=?", (json.dumps(sorted(labels)), eid))
 
     def _animal_backfill(self) -> None:

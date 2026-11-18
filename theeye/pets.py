@@ -30,6 +30,9 @@ TOP_K = 3                        # a look's score: mean of its best matches amon
 MIN_PX = 24                      # smaller animals are too blurry to tell apart
 INSET = 0.08                     # crop this share in from each side of the box: the snapshot's box line is drawn there
 SCAN_IDLE_LOAD = 0.5
+# not a sighting since named a skunk, raccoon... (by hand or after an example): never offered as a pet
+NOT_WILD = (" AND detection_id NOT IN (SELECT id FROM detections WHERE kind IS NOT NULL"
+            " AND kind NOT IN ('dog','cat'))")
 
 
 class Pets:
@@ -70,26 +73,11 @@ class Pets:
     # ------------------------------------------------------------ looks
     def add_look(self, det_id: int) -> Optional[int]:
         """Picture the animal of one detection (from its snapshot) and match it. Returns the look's id."""
-        r = self.db.one("SELECT camera_id, first_ts, bbox, snapshot_path FROM detections WHERE id=?", (det_id,))
-        emb = self.hub.embedder
-        if not r or not r["snapshot_path"] or emb is None:
+        look = tight_look(self.hub, det_id)
+        if look is None:
             return None
-        img = cv2.imread(str(self.hub.data / r["snapshot_path"]))
-        b = jload(r["bbox"], [])
-        if img is None or len(b) != 4:
-            return None
-        h, w = img.shape[:2]
-        x1, y1, x2, y2 = b[0] * w, b[1] * h, b[2] * w, b[3] * h
-        size = int(max(x2 - x1, y2 - y1))
-        if size < MIN_PX:
-            return None
-        dx, dy = (x2 - x1) * INSET, (y2 - y1) * INSET
-        crop = img[int(y1 + dy):int(y2 - dy), int(x1 + dx):int(x2 - dx)]
-        if crop.size == 0:
-            return None
-        feat = emb.image(crop)
-        if feat is None:
-            return None
+        feat, size, img, (x1, y1, x2, y2), crop = look
+        r = self.db.one("SELECT camera_id, first_ts FROM detections WHERE id=?", (det_id,))
         day = time.strftime("%Y-%m-%d", time.localtime(r["first_ts"]))
         rel = Path("snaps") / "faces" / r["camera_id"] / day / f"pet_{det_id}.jpg"
         (self.hub.data / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -194,13 +182,14 @@ class Pets:
             refs = self._refs.get(pid)
         if refs is None:              # nothing to compare with yet: offer the clearest dogs and cats seen to start from
             rows = [r for r in self.db.all("SELECT id, detection_id, camera_id, ts, size, path, status, rejected"
-                                           " FROM pet_looks WHERE status='unknown' ORDER BY size DESC, ts DESC")
+                                           " FROM pet_looks WHERE status='unknown'" + NOT_WILD +
+                                           " ORDER BY size DESC, ts DESC")
                     if pid not in jload(r["rejected"], [])][:limit]
             return self._with_clip([{k: r[k] for k in ("id", "detection_id", "camera_id", "ts", "size", "path",
                                                        "status")} | {"score": None} for r in rows])
         out = []
         for r in self.db.all("SELECT id, detection_id, camera_id, ts, size, embedding, path, status, pet_id, rejected"
-                             " FROM pet_looks WHERE status IN ('unknown','auto')"):
+                             " FROM pet_looks WHERE status IN ('unknown','auto')" + NOT_WILD):
             if pid in jload(r["rejected"], []) or (r["status"] == "auto" and r["pet_id"] != pid):
                 continue
             s = float(np.sort(refs @ np.frombuffer(r["embedding"], dtype=np.float32))[-TOP_K:].mean())
@@ -261,3 +250,38 @@ class Pets:
                 except Exception:  # noqa: BLE001
                     log.debug("pet look for detection %d failed", did, exc_info=True)
                     skip.add(did)
+
+
+def tight_look(hub, det_id: int):
+    """(CLIP picture of just the animal, its size in px, the snapshot, its box in px, the crop), or None when there's
+    no snapshot or the animal is too small to tell apart."""
+    r = hub.db.one("SELECT bbox, snapshot_path FROM detections WHERE id=?", (det_id,))
+    emb = hub.embedder
+    if not r or not r["snapshot_path"] or emb is None:
+        return None
+    img = cv2.imread(str(hub.data / r["snapshot_path"]))
+    b = jload(r["bbox"], [])
+    if img is None or len(b) != 4:
+        return None
+    h, w = img.shape[:2]
+    x1, y1, x2, y2 = b[0] * w, b[1] * h, b[2] * w, b[3] * h
+    size = int(max(x2 - x1, y2 - y1))
+    if size < MIN_PX:
+        return None
+    dx, dy = (x2 - x1) * INSET, (y2 - y1) * INSET
+    crop = img[int(y1 + dy):int(y2 - dy), int(x1 + dx):int(x2 - dx)]
+    if crop.size == 0:
+        return None
+    feat = emb.image(crop)
+    if feat is None:
+        return None
+    return feat, size, img, (x1, y1, x2, y2), crop
+
+
+def look_of(hub, det_id: int) -> Optional[np.ndarray]:
+    """The animal's picture fingerprint: the stored one when the Pets scan already made it, else made now."""
+    r = hub.db.one("SELECT embedding FROM pet_looks WHERE detection_id=?", (det_id,))
+    if r:
+        return np.frombuffer(r["embedding"], dtype=np.float32)
+    look = tight_look(hub, det_id)
+    return look[0] if look else None

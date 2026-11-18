@@ -121,6 +121,14 @@ CREATE TABLE IF NOT EXISTS pet_looks (
 );
 CREATE INDEX IF NOT EXISTS pet_looks_pet ON pet_looks(pet_id);
 
+-- Animals you named in the player ("this is a skunk"): kept as examples for later look-alikes (theeye.wildlife).
+CREATE TABLE IF NOT EXISTS animal_marks (
+    detection_id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL,
+    embedding BLOB,                             -- CLIP picture of just the animal (as pet_looks)
+    ts REAL
+);
+
 -- Repeat-vehicle tracking: one row per distinct vehicle (matched by plate or appearance).
 CREATE TABLE IF NOT EXISTS vehicles (
     id INTEGER PRIMARY KEY,
