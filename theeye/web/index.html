@@ -78,25 +78,22 @@
   <section id="tab-people" class="tab">
     <div class="setup">
       <div class="card-s">
-        <div class="card-h"><h2>People</h2><span id="people-stats" class="muted small"></span></div>
-        <p class="muted small">Family members recognised by face, so recordings are tagged with their name and
-          search finds them (“rylan yesterday”). Add a name, then teach it: in a recording's details choose who a
-          person is, or confirm suggestions below. Faces need to be reasonably close and turned toward the camera;
-          everything stays on this machine.</p>
-        <form id="people-add" class="row" style="gap:8px"><input name="name" placeholder="Name" maxlength="40" required>
-          <button type="submit" class="primary">+ Add person</button></form>
+        <div class="card-h"><h2>People &amp; Pets</h2><span id="pp-stats" class="muted small"></span>
+          <button type="button" id="pp-add-btn" class="primary" aria-expanded="false">+ Add person or pet</button></div>
+        <p class="muted small">Family recognised by face, and dogs and cats by how they look, so recordings are tagged with
+          their name and search finds them (“sam yesterday”). Click someone to confirm more sightings of them or to
+          choose their main picture. Everything stays on this machine.</p>
+        <form id="pp-add" class="pp-add" hidden>
+          <div class="pp-kind" role="radiogroup" aria-label="Person or pet">
+            <label><input type="radio" name="kind" value="person" checked> Person</label>
+            <label><input type="radio" name="kind" value="pet"> Pet (dog or cat)</label>
+          </div>
+          <div class="row" style="gap:8px"><input name="name" placeholder="Name" maxlength="40" required>
+            <button type="submit" class="primary">Add</button><button type="button" id="pp-add-cancel">Cancel</button></div>
+          <p id="pp-add-hint" class="muted small"></p>
+        </form>
       </div>
-      <div id="people-list"></div>
-      <div class="card-s">
-        <div class="card-h"><h2>Pets</h2><span id="pets-stats" class="muted small"></span></div>
-        <p class="muted small">Dogs and cats recognised by how they look (colour, coat, shape), so recordings are tagged
-          with their name and search finds them. Add a name, then teach it: in a recording's details choose which pet an
-          animal is, or pick from the dogs and cats seen below. A handful of confirmed pictures from different cameras
-          and times of day works best.</p>
-        <form id="pets-add" class="row" style="gap:8px"><input name="name" placeholder="Pet's name" maxlength="40" required>
-          <button type="submit" class="primary">+ Add pet</button></form>
-      </div>
-      <div id="pets-list"></div>
+      <div id="pp-grid" class="pp-grid"></div>
     </div>
   </section>
 

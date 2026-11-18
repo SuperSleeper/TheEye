@@ -531,6 +531,27 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
 
     # ------------------------------------------------------------ vehicles
     # ------------------------------------------------------------ people (face recognition)
+    # Shared by people and pets: counts, and the main picture (the one you chose, else the clearest confirmed one,
+    # else the best automatic match). Table names come from the two call sites below, never from a request.
+    def _summary(pics: str, owner: str, reg: str, pid: int) -> dict:
+        cols = "id, detection_id, camera_id, ts, size, path"
+        n = db.one(f"SELECT SUM(status='confirmed') AS conf, COUNT(*) AS seen, MAX(ts) AS last FROM {pics}"
+                   f" WHERE {owner}=? AND status IN ('auto','confirmed')", (pid,))
+        chosen = (db.one(f"SELECT cover FROM {reg} WHERE id=?", (pid,)) or {}).get("cover")
+        cover = chosen and db.one(f"SELECT {cols} FROM {pics} WHERE id=? AND {owner}=? AND status='confirmed'",
+                                  (chosen, pid))
+        cover = cover or db.one(f"SELECT {cols} FROM {pics} WHERE {owner}=? AND status='confirmed'"
+                                " ORDER BY size DESC LIMIT 1", (pid,)) \
+            or db.one(f"SELECT {cols} FROM {pics} WHERE {owner}=? AND status='auto' ORDER BY score DESC LIMIT 1", (pid,))
+        return {"cover": cover or None, "cover_chosen": bool(chosen and cover and cover["id"] == chosen),
+                "n_confirmed": n["conf"] or 0, "n_seen": n["seen"], "last_seen": n["last"]}
+
+    def _set_cover(pics: str, owner: str, reg: str, pid: int, pic_id: int) -> dict:
+        if not db.one(f"SELECT 1 FROM {pics} WHERE id=? AND {owner}=? AND status='confirmed'", (pic_id, pid)):
+            raise HTTPException(404, "not one of their confirmed pictures")
+        db.execute(f"UPDATE {reg} SET cover=? WHERE id=?", (pic_id, pid))
+        return {"ok": True}
+
     def people_or_503():
         if not hub.people:
             raise HTTPException(503, "face recognition isn't available")
@@ -541,11 +562,7 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         p = people_or_503()
         out = []
         for pid, name in sorted(p.names().items(), key=lambda kv: kv[1].lower()):
-            conf = p.confirmed(pid)
-            seen = db.one("SELECT COUNT(*) AS n, MAX(ts) AS last FROM faces WHERE person_id=? AND status IN"
-                          " ('auto','confirmed')", (pid,))
-            out.append({"id": pid, "name": name, "confirmed": conf[:24], "n_confirmed": len(conf),
-                        "n_seen": seen["n"], "last_seen": seen["last"]})
+            out.append({"id": pid, "name": name, **_summary("faces", "person_id", "people", pid)})
         return {"people": out, "stats": p.stats, "models": bool(p.engine._load())}
 
     @app.post("/api/people")
@@ -562,6 +579,14 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
     def people_remove(pid: int):
         people_or_503().remove_person(pid)
         return {"ok": True}
+
+    @app.get("/api/people/{pid}/confirmed")
+    def people_confirmed(pid: int):
+        return people_or_503().confirmed(pid)
+
+    @app.post("/api/people/{pid}/cover")
+    def people_cover(pid: int, face_id: int = Body(..., embed=True)):
+        return _set_cover("faces", "person_id", "people", pid, face_id)
 
     @app.get("/api/people/{pid}/suggestions")
     async def people_suggest(pid: int, limit: int = 60):
@@ -603,11 +628,7 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         p = pets_or_503()
         out = []
         for pid, name in sorted(p.names().items(), key=lambda kv: kv[1].lower()):
-            conf = p.confirmed(pid)
-            seen = db.one("SELECT COUNT(*) AS n, MAX(ts) AS last FROM pet_looks WHERE pet_id=? AND status IN"
-                          " ('auto','confirmed')", (pid,))
-            out.append({"id": pid, "name": name, "confirmed": conf[:24], "n_confirmed": len(conf),
-                        "n_seen": seen["n"], "last_seen": seen["last"]})
+            out.append({"id": pid, "name": name, **_summary("pet_looks", "pet_id", "pets", pid)})
         return {"pets": out, "stats": p.stats}
 
     @app.post("/api/pets")
@@ -623,6 +644,14 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
     def pets_remove(pid: int):
         pets_or_503().remove_pet(pid)
         return {"ok": True}
+
+    @app.get("/api/pets/{pid}/confirmed")
+    def pets_confirmed(pid: int):
+        return pets_or_503().confirmed(pid)
+
+    @app.post("/api/pets/{pid}/cover")
+    def pets_cover(pid: int, look_id: int = Body(..., embed=True)):
+        return _set_cover("pet_looks", "pet_id", "pets", pid, look_id)
 
     @app.get("/api/pets/{pid}/suggestions")
     async def pets_suggest(pid: int, limit: int = 60):

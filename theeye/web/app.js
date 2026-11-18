@@ -1843,150 +1843,185 @@ function refreshCameraSelects() {
   $('#zn-cam').innerHTML = opts;
 }
 
-// ---------------------------------------------------------------- people (face recognition)
+// ---------------------------------------------------------------- people & pets (recognised by face / by look)
+// One tile per person or pet (main picture + name); clicking one opens it in place to confirm more sightings,
+// remove wrong pictures and choose the main picture.
 const PEOPLE = { list: [] };
+const PETS = { list: [] };
+let ANIMAL_KINDS = [];         // what "What animal?" in the player offers (animals.kinds in the config)
+api('/api/animals/kinds').then(r => { ANIMAL_KINDS = r.kinds; }).catch(() => {});
 function alertInline(el, msg) {           // a short note next to a control, instead of a blocking dialog
   const n = document.createElement('span'); n.className = 'small warn'; n.textContent = ' ' + msg;
   el.after(n); setTimeout(() => n.remove(), 6000);
 }
 async function refreshPeople() { try { PEOPLE.list = (await api('/api/people')).people; } catch { PEOPLE.list = []; } }
-refreshPeople();
-async function loadPeople() {
-  const r = await api('/api/people');
-  PEOPLE.list = r.people;
-  const st = r.stats || {};
-  $('#people-stats').textContent = !r.models ? 'face models missing: recognition off'
-    : `${st.faces || 0} faces found this run` + (st.scan_left ? ` · ${st.scan_left} past people still to look through` : '');
-  const face = f => faceImg(f);
-  const confirmedFace = (f, p) => `<span class="cf" data-fid="${f.id}">${face(f)}<button type="button" class="cf-x"
-    title="Not ${esc(p.name)}: remove this photo (it won't be suggested for ${esc(p.name)} again)" aria-label="Remove photo">✕</button></span>`;
-  $('#people-list').innerHTML = r.people.map(p => `
-    <div class="card-s person" data-pid="${p.id}">
-      <div class="card-h"><h2>${esc(p.name)}</h2>
-        <span class="muted small">${p.n_confirmed} confirmed · seen ${p.n_seen}×${p.last_seen ? ' · last ' + esc(fmtTime(p.last_seen)) : ''}</span>
-        <button type="button" class="danger small-btn" data-del="${p.id}" title="Remove ${esc(p.name)} and their face examples">Remove</button></div>
-      <div class="faces">${p.confirmed.map(f => confirmedFace(f, p)).join('') || '<span class="muted small">No confirmed faces yet: choose “This is ' + esc(p.name) + '” on a person in a recording.</span>'}</div>
-      <div class="sub-h">Is this ${esc(p.name)}?</div>
-      <div class="sugg" data-pid="${p.id}"><span class="muted small">Looking…</span></div>
-    </div>`).join('') || '<p class="muted">No people yet.</p>';
-  $$('#people-list [data-del]').forEach(b => b.onclick = async () => {
-    if (b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = 'Click again to remove'; return; }
-    await api(`/api/people/${b.dataset.del}`, { method: 'DELETE' }); loadPeople();
-  });
-  $$('#people-list .cf-x').forEach(b => b.onclick = async () => {
-    const cf = b.closest('.cf'), pid = +b.closest('.person').dataset.pid;
-    b.disabled = true;
-    try { await api(`/api/faces/${cf.dataset.fid}`, { method: 'POST', body: { person_id: pid, verdict: 'no' } }); cf.remove(); setTimeout(loadPeople, 1500); }
-    catch (err) { b.disabled = false; alertInline(b, 'Failed: ' + err.message); }
-  });
-  bindFaceClicks($('#people-list'));
-  for (const p of r.people) loadSuggestions(p);
-  loadPets();
-}
-// A face picture plays the recording it came from, a moment before the face was seen.
-function faceImg(f) {
-  return `<img class="face${f.event_id ? ' playable' : ''}" loading="lazy" src="/media/${esc(f.path)}"
+async function refreshPets() { try { PETS.list = (await api('/api/pets')).pets; } catch { PETS.list = []; } }
+refreshPeople(); refreshPets();
+
+const PP = {
+  person: { api: '/api/people', pic: id => `/api/faces/${id}`, owner: 'person_id', coverKey: 'face_id', word: 'Person',
+            store: PEOPLE, none: n => `No confirmed faces yet: choose “This is ${n}” on a person in a recording.`,
+            ask: n => `Is this ${n}?`, empty: c => `No suggestions${c ? '' : ' until a face is confirmed'}. More appear as past recordings are looked through.` },
+  pet:    { api: '/api/pets', pic: id => `/api/pet_looks/${id}`, owner: 'pet_id', coverKey: 'look_id', word: 'Pet',
+            store: PETS, none: n => `No confirmed pictures yet: choose “This is ${n}” on a dog or cat in a recording, or pick from the dogs and cats below.`,
+            ask: (n, c) => c ? `Is this ${n}?` : `Dogs and cats seen: which are ${n}?`, empty: () => 'No suggestions yet. More appear as past sightings are looked through.' },
+};
+let ppOpen = null;                        // "person:3" / "pet:1": the tile that's open
+const ppItem = key => { const [k, id] = key.split(':'); return { kind: k, ...PP[k].store.list.find(p => p.id === +id) }; };
+
+// A face/pet picture plays the recording it came from, a moment before it was seen.
+function faceImg(f, extra = '') {
+  return `<img class="face${f.event_id ? ' playable' : ''}${extra}" loading="lazy" src="/media/${esc(f.path)}"
     ${f.event_id ? `data-ev="${f.event_id}" data-seek="${f.seek}"` : ''}
     title="${esc(camName(f.camera_id))} · ${esc(fmtTime(f.ts))}${f.event_id ? ' · click to play' : ' · recording no longer kept'}">`;
 }
-function bindFaceClicks(root) {
-  $$('img.face[data-ev]', root).forEach(img => img.onclick = () =>
-    openFromList([{ id: +img.dataset.ev, seek: +img.dataset.seek }], 0, 'people'));
+const coverImg = it => it.cover ? `<img class="face cover" loading="lazy" alt="" src="/media/${esc(it.cover.path)}">`
+  : `<span class="face cover none" aria-hidden="true">${esc(it.name.slice(0, 1).toUpperCase())}</span>`;
+
+async function loadPeople() {
+  const [pr, tr] = await Promise.all([api('/api/people').catch(() => null), api('/api/pets').catch(() => null)]);
+  PEOPLE.list = pr?.people || []; PETS.list = tr?.pets || [];
+  const ps = pr?.stats || {}, ts = tr?.stats || {};
+  const left = [ps.scan_left && `${ps.scan_left} past people`, ts.scan_left && `${ts.scan_left} past dogs/cats`].filter(Boolean);
+  $('#pp-stats').textContent = [!pr ? 'face recognition unavailable' : !pr.models ? 'face models missing: people not recognised' : '',
+    left.length ? left.join(' and ') + ' still to look through' : ''].filter(Boolean).join(' · ');
+  $('#pp-add input[value="person"]').disabled = !pr;
+  const items = [...PEOPLE.list.map(p => ({ ...p, kind: 'person' })), ...PETS.list.map(p => ({ ...p, kind: 'pet' }))];
+  $('#pp-grid').innerHTML = items.map(it => `
+    <div class="pp-tile" data-k="${it.kind}:${it.id}">
+      <button type="button" class="pp-head" aria-expanded="false" title="Show ${esc(it.name)}'s pictures and sightings to confirm">
+        ${coverImg(it)}
+        <span class="pp-name">${esc(it.name)}</span>
+        <span class="small muted">${PP[it.kind].word} · ${it.n_confirmed} picture${it.n_confirmed === 1 ? '' : 's'}</span>
+      </button>
+      <div class="pp-body" hidden></div>
+    </div>`).join('') || '<p class="muted">No one yet: add a person or pet above.</p>';
+  const open = ppOpen && $(`#pp-grid .pp-tile[data-k="${ppOpen}"]`);
+  if (open) ppExpand(open); else ppOpen = null;
 }
-async function loadSuggestions(p) {
-  const box = $(`#people-list .sugg[data-pid="${p.id}"]`);
-  const s = await api(`/api/people/${p.id}/suggestions?limit=40`);
-  box.innerHTML = s.map(f => `
-    <div class="sg" data-fid="${f.id}">
-      ${faceImg(f)}
-      <div class="small muted">${esc(camName(f.camera_id))}<br>${esc(new Date(f.ts * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}</div>
-      <div class="small">${Math.round(f.score * 100)}% ${f.status === 'auto' ? '· tagged' : ''}</div>
-      <div class="row" style="gap:4px"><button type="button" data-v="yes" title="Yes, this is ${esc(p.name)}">✓</button>
-        <button type="button" data-v="no" title="No, not ${esc(p.name)}">✗</button></div>
-    </div>`).join('') || `<span class="muted small">No suggestions${p.n_confirmed ? '' : ' until a face is confirmed'}. More appear as past recordings are looked through.</span>`;
-  bindFaceClicks(box);
-  $$('.sg button', box).forEach(b => b.onclick = async () => {
-    const sg = b.closest('.sg');
-    await api(`/api/faces/${sg.dataset.fid}`, { method: 'POST', body: { person_id: p.id, verdict: b.dataset.v } });
-    sg.remove();
-    if (b.dataset.v === 'yes' && !$('.sg', box)) setTimeout(() => loadSuggestions(p), 1500);    // re-match runs in the background
-  });
+
+function ppExpand(tile) {
+  $$('#pp-grid .pp-tile.open').forEach(t => { if (t !== tile) ppCollapse(t); });
+  tile.classList.add('open'); $('.pp-head', tile).setAttribute('aria-expanded', 'true');
+  ppOpen = tile.dataset.k;
+  ppFill(tile);
 }
-$('#people-add').onsubmit = async ev => {
-  ev.preventDefault();
-  const f = ev.target;
-  try { await api('/api/people', { method: 'POST', body: { name: f.name.value } }); f.reset(); await refreshPeople(); loadPeople(); }
-  catch (err) { alertInline(f.querySelector('button'), err.message.includes('409') ? 'That name is already used' : 'Failed: ' + err.message); }
+function ppCollapse(tile) {
+  tile.classList.remove('open'); $('.pp-head', tile).setAttribute('aria-expanded', 'false');
+  const b = $('.pp-body', tile); b.hidden = true; b.innerHTML = '';
+  if (ppOpen === tile.dataset.k) ppOpen = null;
+}
+
+const cfHtml = (f, it) => {
+  const main = it.cover_chosen && it.cover?.id === f.id;
+  return `<span class="cf${main ? ' main' : ''}" data-fid="${f.id}">${faceImg(f)}
+    <button type="button" class="cf-star" title="${main ? 'Main picture' : 'Use as main picture'}" aria-label="Use as main picture" aria-pressed="${main}">${main ? '★' : '☆'}</button>
+    <button type="button" class="cf-x" title="Not ${esc(it.name)}: take this picture off (it won't be suggested for ${esc(it.name)} again)" aria-label="Not ${esc(it.name)}">✕</button></span>`;
 };
 
-// ---------------------------------------------------------------- pets (recognised by look)
-const PETS = { list: [] };
-let ANIMAL_KINDS = [];         // what "What animal?" in the player offers (animals.kinds in the config)
-api('/api/animals/kinds').then(r => { ANIMAL_KINDS = r.kinds; }).catch(() => {});
-async function refreshPets() { try { PETS.list = (await api('/api/pets')).pets; } catch { PETS.list = []; } }
-refreshPets();
-async function loadPets() {
-  const r = await api('/api/pets');
-  PETS.list = r.pets;
-  const st = r.stats || {};
-  $('#pets-stats').textContent = st.scan_left ? `${st.scan_left} past dogs/cats still to look through` : '';
-  $('#pets-list').innerHTML = r.pets.map(p => `
-    <div class="card-s person" data-pid="${p.id}">
-      <div class="card-h"><h2>${esc(p.name)}</h2>
-        <span class="muted small">${p.n_confirmed} confirmed · seen ${p.n_seen}×${p.last_seen ? ' · last ' + esc(fmtTime(p.last_seen)) : ''}</span>
-        <button type="button" class="danger small-btn" data-del="${p.id}" title="Remove ${esc(p.name)} and their examples">Remove</button></div>
-      <div class="faces">${p.confirmed.map(f => `<span class="cf" data-fid="${f.id}">${faceImg(f)}<button type="button" class="cf-x"
-        title="Not ${esc(p.name)}: take this picture off" aria-label="Not ${esc(p.name)}">✕</button></span>`).join('')
-        || '<span class="muted small">No confirmed pictures yet: choose “This is ' + esc(p.name) + '” on a dog or cat in a recording, or pick from the dogs and cats seen below.</span>'}</div>
-      <div class="sub-h">${p.n_confirmed ? 'Is this ' + esc(p.name) + '?' : 'Dogs and cats seen: which are ' + esc(p.name) + '?'}</div>
-      <div class="sugg" data-pid="${p.id}"><span class="muted small">Looking…</span></div>
-    </div>`).join('');
-  $$('#pets-list [data-del]').forEach(b => b.onclick = async () => {
-    if (b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = 'Click again to remove'; return; }
-    await api(`/api/pets/${b.dataset.del}`, { method: 'DELETE' }); await refreshPets(); loadPets();
-  });
-  $$('#pets-list .cf-x').forEach(b => b.onclick = async () => {
-    const cf = b.closest('.cf'), pid = +b.closest('.person').dataset.pid;
-    b.disabled = true;
-    try { await api(`/api/pet_looks/${cf.dataset.fid}`, { method: 'POST', body: { pet_id: pid, verdict: 'no' } }); cf.remove(); petsReloadSoon(); }
-    catch (err) { b.disabled = false; alertInline(b, 'Failed: ' + err.message); }
-  });
-  bindFaceClicks($('#pets-list'));
-  for (const p of r.pets) loadPetSuggestions(p);
-}
-async function loadPetSuggestions(p) {
-  const box = $(`#pets-list .sugg[data-pid="${p.id}"]`);
-  const s = await api(`/api/pets/${p.id}/suggestions?limit=40`);
+async function ppFill(tile) {
+  const it = ppItem(tile.dataset.k), K = PP[it.kind], body = $('.pp-body', tile);
+  body.hidden = false;
+  body.innerHTML = '<span class="muted small">Loading…</span>';
+  let conf;
+  try { conf = await api(`${K.api}/${it.id}/confirmed`); }
+  catch (err) { body.innerHTML = `<span class="small warn">Failed: ${esc(err.message)}</span>`; return; }
+  if (!tile.classList.contains('open')) return;
+  body.innerHTML = `
+    <div class="pp-meta small muted">${it.n_confirmed} confirmed · seen ${it.n_seen}×${it.last_seen ? ' · last ' + esc(fmtTime(it.last_seen)) : ''}
+      <button type="button" class="danger small-btn" data-del title="Remove ${esc(it.name)} and their examples">Remove</button></div>
+    <div class="sub-h">Pictures · ☆ chooses the main one, ✕ takes a wrong one off</div>
+    <div class="faces">${conf.map(f => cfHtml(f, it)).join('') || `<span class="muted small">${esc(K.none(it.name))}</span>`}</div>
+    <div class="sub-h">${esc(K.ask(it.name, it.n_confirmed))}</div>
+    <div class="sugg"><span class="muted small">Looking…</span></div>`;
+  const box = $('.sugg', body);
+  const s = await api(`${K.api}/${it.id}/suggestions?limit=40`).catch(() => []);
+  if (!tile.classList.contains('open')) return;
   box.innerHTML = s.map(f => `
     <div class="sg" data-fid="${f.id}">
       ${faceImg(f)}
       <div class="small muted">${esc(camName(f.camera_id))}<br>${esc(new Date(f.ts * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}</div>
       <div class="small">${f.score != null ? Math.round(f.score * 100) + '%' : ''} ${f.status === 'auto' ? '· tagged' : ''}</div>
-      <div class="row" style="gap:4px"><button type="button" data-v="yes" title="Yes, this is ${esc(p.name)}">✓</button>
-        <button type="button" data-v="no" title="No, not ${esc(p.name)}">✗</button></div>
-    </div>`).join('') || '<span class="muted small">No suggestions yet. More appear as past sightings are looked through.</span>';
-  bindFaceClicks(box);
-  $$('.sg button', box).forEach(b => b.onclick = async () => {
-    const sg = b.closest('.sg');
+      <div class="row" style="gap:4px"><button type="button" data-v="yes" title="Yes, this is ${esc(it.name)}">✓</button>
+        <button type="button" data-v="no" title="No, not ${esc(it.name)}">✗</button></div>
+    </div>`).join('') || `<span class="muted small">${esc(K.empty(it.n_confirmed))}</span>`;
+}
+
+// Redraw once the clicking stops, so the page doesn't jump around under the mouse.
+let ppReloadTimer;
+function ppReloadSoon() { clearTimeout(ppReloadTimer); ppReloadTimer = setTimeout(loadPeople, 4000); }
+
+$('#pp-grid').onclick = async ev => {
+  const t = ev.target, tile = t.closest('.pp-tile');
+  if (!tile) return;
+  if (t.closest('.pp-head')) return tile.classList.contains('open') ? ppCollapse(tile) : ppExpand(tile);
+  const it = ppItem(tile.dataset.k), K = PP[it.kind];
+  if (t.matches('img.face[data-ev]'))
+    return openFromList([{ id: +t.dataset.ev, seek: +t.dataset.seek }], 0, 'people');
+  if (t.matches('.cf-star')) {
+    const cf = t.closest('.cf');
+    t.disabled = true;
+    try { await api(`${K.api}/${it.id}/cover`, { method: 'POST', body: { [K.coverKey]: +cf.dataset.fid } }); }
+    catch (err) { alertInline(t, 'Failed: ' + err.message); return; }
+    finally { t.disabled = false; }
+    $$('.cf.main', tile).forEach(c => { c.classList.remove('main'); const st = $('.cf-star', c); st.textContent = '☆'; st.title = 'Use as main picture'; st.setAttribute('aria-pressed', 'false'); });
+    cf.classList.add('main'); t.textContent = '★'; t.title = 'Main picture'; t.setAttribute('aria-pressed', 'true');
+    $('.pp-head .cover', tile).outerHTML = `<img class="face cover" alt="" src="${esc($('img', cf).getAttribute('src'))}">`;
+    const rec = K.store.list.find(p => p.id === it.id);
+    if (rec) { rec.cover = { id: +cf.dataset.fid, path: $('img', cf).getAttribute('src').slice(7) }; rec.cover_chosen = true; }
+    return;
+  }
+  if (t.matches('.cf-x')) {
+    const cf = t.closest('.cf');
+    t.disabled = true;
+    try { await api(K.pic(cf.dataset.fid), { method: 'POST', body: { [K.owner]: it.id, verdict: 'no' } }); cf.remove(); ppReloadSoon(); }
+    catch (err) { t.disabled = false; alertInline(t, 'Failed: ' + err.message); }
+    return;
+  }
+  if (t.matches('.sg button')) {
+    const sg = t.closest('.sg');
     $$('button', sg).forEach(x => x.disabled = true);
-    try { await api(`/api/pet_looks/${sg.dataset.fid}`, { method: 'POST', body: { pet_id: p.id, verdict: b.dataset.v } }); }
-    catch (err) { $$('button', sg).forEach(x => x.disabled = false); alertInline(b, 'Failed: ' + err.message); return; }
-    if (b.dataset.v === 'yes') {          // move the picture up into the pet's confirmed row right away
-      const row = $(`#pets-list .person[data-pid="${p.id}"] .faces`);
+    try { await api(K.pic(sg.dataset.fid), { method: 'POST', body: { [K.owner]: it.id, verdict: t.dataset.v } }); }
+    catch (err) { $$('button', sg).forEach(x => x.disabled = false); alertInline(t, 'Failed: ' + err.message); return; }
+    if (t.dataset.v === 'yes') {          // move the picture up into the confirmed row right away
+      const row = $('.faces', tile), img = $('img', sg);
       $('span.muted', row)?.remove();
-      row.insertAdjacentHTML('afterbegin', `<span class="cf" data-fid="${sg.dataset.fid}"></span>`);
-      row.firstElementChild.append($('img', sg));
+      row.insertAdjacentHTML('afterbegin', cfHtml({ id: +sg.dataset.fid, path: '', camera_id: '', ts: 0 }, it));
+      $('img', row.firstElementChild).replaceWith(img);
     }
     sg.remove();
-    petsReloadSoon();      // counts, and suggestions re-matched against the new example (runs in the background)
-  });
+    ppReloadSoon();      // counts, and suggestions re-matched against the new example (runs in the background)
+    return;
+  }
+  if (t.matches('[data-del]')) {
+    if (t.dataset.armed !== '1') { t.dataset.armed = '1'; t.textContent = 'Click again to remove'; return; }
+    await api(`${K.api}/${it.id}`, { method: 'DELETE' });
+    ppOpen = null; loadPeople();
+  }
+};
+
+// "+ Add person or pet" opens a small form to choose which, then name them.
+function ppAddHint() {
+  const f = $('#pp-add'), pet = f.kind.value === 'pet';
+  f.name.placeholder = pet ? "Pet's name" : 'Name';
+  $('#pp-add-hint').textContent = pet
+    ? 'Then click them below and pick their pictures from the dogs and cats seen. A handful from different cameras and times of day works best.'
+    : 'Then click them below and confirm the faces suggested, or choose “This is …” on a person in a recording. Faces need to be fairly close and turned toward the camera.';
 }
-// Redraw once the clicking stops, so the list doesn't jump around under the mouse.
-let petsReloadTimer;
-function petsReloadSoon() { clearTimeout(petsReloadTimer); petsReloadTimer = setTimeout(loadPets, 4000); }
-$('#pets-add').onsubmit = async ev => {
+function ppAddShow(on) {
+  $('#pp-add').hidden = !on; $('#pp-add-btn').hidden = on; $('#pp-add-btn').setAttribute('aria-expanded', String(on));
+  if (on) { ppAddHint(); $('#pp-add').name.focus(); } else $('#pp-add').reset();
+}
+$('#pp-add-btn').onclick = () => ppAddShow(true);
+$('#pp-add-cancel').onclick = () => ppAddShow(false);
+$$('#pp-add input[name="kind"]').forEach(r => r.onchange = ppAddHint);
+$('#pp-add').onsubmit = async ev => {
   ev.preventDefault();
-  const f = ev.target;
-  try { await api('/api/pets', { method: 'POST', body: { name: f.name.value } }); f.reset(); await refreshPets(); loadPets(); }
-  catch (err) { alertInline(f.querySelector('button'), err.message.includes('409') ? 'That name is already used' : 'Failed: ' + err.message); }
+  const f = ev.target, kind = f.kind.value;
+  try {
+    const r = await api(PP[kind].api, { method: 'POST', body: { name: f.name.value } });
+    ppAddShow(false); ppOpen = `${kind}:${r.id}`;
+    await loadPeople();
+    $(`#pp-grid .pp-tile[data-k="${ppOpen}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  } catch (err) { alertInline(f.querySelector('button[type=submit]'), err.message.includes('409') ? 'That name is already used' : 'Failed: ' + err.message); }
 };

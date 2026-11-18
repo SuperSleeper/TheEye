@@ -235,6 +235,12 @@ class DB:
             "who": "TEXT",                                # name of the recognised person or pet (theeye.people / theeye.pets)
             "face_checked": "INTEGER",                    # 1 once looked at for a face                       # certainty of kind/subtype; 0 = looked, kept the label
         },
+        "people": {
+            "cover": "INTEGER",                           # faces.id shown as their main picture (NULL = the clearest)
+        },
+        "pets": {
+            "cover": "INTEGER",                           # pet_looks.id shown as their main picture (NULL = the clearest)
+        },
     }
 
     def _migrate(self) -> None:
