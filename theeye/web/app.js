@@ -610,22 +610,47 @@ function friendlyCamError(err, state) {
 function editCamera(id) { S.pendingOpen = id; showTab('setup'); }
 
 // ---------------------------------------------------------------- events
-async function loadEvents() {
-  const cam = $('#ev-cam').value;
-  const evs = await api(`/api/events?limit=200${cam ? '&camera_id=' + encodeURIComponent(cam) : ''}`);
-  $('#ev-list').innerHTML = evs.map(e => `
-    <div class="card" data-id="${e.id}">
+// Events come a page at a time, newest first; older pages load when you scroll to the bottom (or click Show older).
+const EV_PAGE = 200;
+const EVL = { list: [], oldest: null, done: false, busy: false, gen: 0 };
+const evCard = (e, i) => `
+    <div class="card" data-id="${e.id}" data-i="${i}">
       ${e.snapshot_path ? `<img loading="lazy" src="/media/${esc(e.snapshot_path)}">` : '<img>'}
       <div class="body">
         <div class="title"><span>${esc(camName(e.camera_id))}</span><span class="muted">${fmtDur(e.end_ts ? e.end_ts - e.start_ts : null)}</span></div>
         <div class="muted">${fmtTime(e.start_ts)} · ${esc(e.rule_name || e.source)}</div>
         <div class="chips">${e.labels.map(l => `<span class="chip">${esc(l)}</span>`).join('')}${e.plates.map(p => `<span class="chip plate">${esc(p)}</span>`).join('')}</div>
       </div>
-    </div>`).join('') || '<p class="muted">No events yet.</p>';
-  const list = evs.map(e => ({ id: e.id }));             // newest first, as shown; the player's arrows walk it
-  $$('#ev-list .card').forEach((c, i) => c.onclick = () => openFromList(list, i, 'events'));
+    </div>`;
+async function loadEvents(more = false) {
+  if (more && (EVL.busy || EVL.done)) return;
+  const gen = more ? EVL.gen : ++EVL.gen, cam = $('#ev-cam').value;
+  EVL.busy = true;
+  try {
+    const evs = await api(`/api/events?limit=${EV_PAGE}${cam ? '&camera_id=' + encodeURIComponent(cam) : ''}`
+      + (more && EVL.oldest ? `&before=${EVL.oldest}` : ''));
+    if (gen !== EVL.gen) return;                       // camera changed meanwhile
+    if (!more) { EVL.list = []; $('#ev-list').innerHTML = ''; }   // a new array: an open player keeps its own
+    const start = EVL.list.length;
+    EVL.list.push(...evs.map(e => ({ id: e.id })));    // newest first, as shown; the player's arrows walk it
+    $('#ev-list').insertAdjacentHTML('beforeend', evs.map((e, k) => evCard(e, start + k)).join(''));
+    if (!EVL.list.length) $('#ev-list').innerHTML = '<p class="muted">No events yet.</p>';
+    if (evs.length) EVL.oldest = evs[evs.length - 1].start_ts;
+    EVL.done = evs.length < EV_PAGE;
+    $('#ev-more').hidden = EVL.done; $('#ev-end').hidden = !EVL.done || !EVL.list.length;
+  } catch (err) { if (more) alertInline($('#ev-more'), 'Failed: ' + err.message); else throw err; }
+  finally { if (gen === EVL.gen) EVL.busy = false; }
+  // Still near the bottom (a short page, or a big screen): no scroll will come to ask for the next page.
+  if (evNearEnd()) setTimeout(() => loadEvents(true), 50);
 }
-$('#ev-refresh').onclick = loadEvents; $('#ev-cam').onchange = loadEvents;
+$('#ev-list').onclick = ev => {
+  const c = ev.target.closest('.card[data-i]');
+  if (c) openFromList(EVL.list, +c.dataset.i, 'events');
+};
+$('#ev-more').onclick = () => loadEvents(true);
+const evNearEnd = () => { const b = $('#ev-more'); return !b.hidden && b.offsetParent && b.getBoundingClientRect().top < innerHeight + 600; };
+addEventListener('scroll', () => { if (evNearEnd()) loadEvents(true); }, { passive: true });
+$('#ev-refresh').onclick = () => loadEvents(); $('#ev-cam').onchange = () => loadEvents();
 
 // Player arrows walk the list the video was opened from:
 //  - Events (newest first): ‹ earlier = next index, › later = previous index

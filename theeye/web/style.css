@@ -343,3 +343,5 @@ html:has(dialog#player[open]) { overflow: hidden; }   /* no page scrollbar besid
 .maxuse input { width: 90px; }
 .stor td.share input { width: 64px; text-align: right; }
 .stor td.share .small { white-space: nowrap; }
+.ev-more { display: flex; justify-content: center; padding: 16px 0 24px; }
+#ev-more[hidden], #ev-end[hidden] { display: none; }
