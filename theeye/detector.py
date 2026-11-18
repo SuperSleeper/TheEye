@@ -33,6 +33,8 @@ NEAR_MATCH = 1.0        # no overlap: a same-size box whose centre moved up to t
 TRAVEL_SHARE = 0.5       # the box's centre must move this share of the box's size to count as travel
 PARK_IOU = 0.8           # box overlap with where it last moved; above this counts as "hasn't moved"
 STILL_SPOT_IOU = 0.7
+INSIDE_SHARE = 0.8       # a box this much inside another is part of it...
+PART_SHARE = 0.03        # ...if at least this share of its size (a car far down the street behind a parked one isn't)
 MIN_HITS = 2               # a track must be seen this many times before it can start a recording
 STILL_SPOT_MIN_S = 20.0    # a vehicle must sit this long to mark a still spot
 PARK_MEMORY_S = 600.0    # remember parked spots this long, so a briefly occluded parked car stays parked
@@ -353,7 +355,12 @@ class Detector:
             # Driving = the box left its anchor on two checks in a row (one bad box isn't travel). The anchor
             # then moves along, so a car that drove once and has sat since counts as sitting again: a parked car
             # whose box once jumped (someone walked in front) used to count as driving for good.
-            best.travel_hits = best.travel_hits + 1 if _moved(best.anchor_bbox, nb) else 0
+            # Moving within a sitting vehicle doesn't count: water running down the lens warps a parked car, and
+            # its box jumps between the whole car, a part of it, and it plus the car beside it.
+            best.travel_hits = (best.travel_hits + 1 if _moved(best.anchor_bbox, nb)
+                                and not _same_place(best.anchor_bbox, nb)
+                                and not (label in VEHICLES and self._was_still_here(cam, label, nb, ts, skip=best))
+                                else 0)
             if best.travel_hits >= 2:
                 best.travelled, best.travel_hits = True, 0
                 best.anchor_bbox, best.anchor_ts = nb, ts
@@ -399,15 +406,17 @@ class Detector:
                 seen.append(best)
         return new, upd, seen, plate_jobs
 
-    def _was_still_here(self, cam: str, label: str, bbox: list[float], ts: float) -> bool:
+    def _was_still_here(self, cam: str, label: str, bbox: list[float], ts: float, skip: Optional[Track] = None) -> bool:
         """Checked every frame, so a car driving past a parked one is only held back while their boxes line up.
         Parked spots count too: they're saved across restarts (still spots are only kept in memory)."""
         spots = [s for s in self._still_spots.get(cam, []) if ts - s[2] < PARK_MEMORY_S]
         self._still_spots[cam] = spots
         # Live vehicles sitting there count too: the detector sometimes gives the same parked car a second box,
-        # which started a fresh (0 s old) track that bush motion then "confirmed".
-        sitting = [(t.label, t.bbox, ts) for t in self.tracks.get(cam, {}).values() if self._sitting(t, ts)]
-        return any(lbl == label and _iou(b, bbox) >= STILL_SPOT_IOU
+        # which started a fresh (0 s old) track that bush motion then "confirmed". Where they sat, as well as
+        # their latest box: rain on the lens warps a parked car, and its own box wanders with the drops.
+        sitting = [(t.label, b, ts) for t in self.tracks.get(cam, {}).values() if t is not skip and self._sitting(t, ts)
+                   for b in (t.bbox, t.anchor_bbox)]
+        return any(lbl == label and _same_place(b, bbox)
                    for lbl, b, _ in spots + self._parked_spots.get(cam, []) + sitting)
 
     @staticmethod
@@ -556,6 +565,21 @@ def _cpu_threads(device: str) -> None:
         torch.set_num_threads(max(2, (os.cpu_count() or 4) // 2))
     except Exception:  # noqa: BLE001
         pass
+
+
+def _inside(a: list[float], b: list[float]) -> bool:
+    """Box a lies mostly within b and is a real part of it (not a far-off car that its corner happens to cover)."""
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    aa = (a[2] - a[0]) * (a[3] - a[1])
+    ab = (b[2] - b[0]) * (b[3] - b[1])
+    return aa > 0 and ix * iy >= INSIDE_SHARE * aa and aa >= PART_SHARE * ab
+
+
+def _same_place(a: list[float], b: list[float]) -> bool:
+    """The same spot: boxes that line up, or one that is a part of the other (half a parked car seen through
+    rain drops, or two parked cars side by side taken as one)."""
+    return _iou(a, b) >= STILL_SPOT_IOU or _inside(a, b) or _inside(b, a)
 
 
 def _moved(a: list[float], b: list[float]) -> bool:
