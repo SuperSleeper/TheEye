@@ -552,6 +552,11 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         db.execute(f"UPDATE {reg} SET cover=? WHERE id=?", (pic_id, pid))
         return {"ok": True}
 
+    def _name_taken(name: str) -> bool:
+        """Names are shared by people, pets and vehicles (they all end up in detections.who)."""
+        taken = {n.lower() for reg in (hub.people, hub.pets, hub.cars) if reg for n in reg.names().values()}
+        return name.lower() in taken
+
     def people_or_503():
         if not hub.people:
             raise HTTPException(503, "face recognition isn't available")
@@ -570,8 +575,8 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         name = name.strip()
         if not name or len(name) > 40:
             raise HTTPException(422, "name must be 1-40 characters")
-        if name.lower() in {n.lower() for n in people_or_503().names().values()} or (
-                hub.pets and name.lower() in {n.lower() for n in hub.pets.names().values()}):
+        people_or_503()
+        if _name_taken(name):
             raise HTTPException(409, "that name is already used")
         return {"id": people_or_503().add_person(name)}
 
@@ -619,9 +624,6 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
             raise HTTPException(503, "pet recognition isn't available")
         return hub.pets
 
-    def _name_taken(name: str) -> bool:
-        taken = set(hub.people.names().values()) if hub.people else set()
-        return name.lower() in {n.lower() for n in taken | set(pets_or_503().names().values())}
 
     @app.get("/api/pets")
     def pets_list():
@@ -675,6 +677,81 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         lid = await asyncio.to_thread(pets_or_503().enrol_detection, det_id, pet_id)
         if not lid:
             raise HTTPException(422, "this animal is too small or has no snapshot to learn from")
+        return {"look_id": lid}
+
+    # ------------------------------------------------------------ your vehicles (recognised by look and plate)
+    def cars_or_503():
+        if not hub.cars:
+            raise HTTPException(503, "vehicle recognition isn't available")
+        return hub.cars
+
+    @app.get("/api/cars")
+    def cars_list():
+        c = cars_or_503()
+        out = []
+        for cid, name in sorted(c.names().items(), key=lambda kv: kv[1].lower()):
+            r = db.one("SELECT plate, plate_src FROM cars WHERE id=?", (cid,)) or {}
+            out.append({"id": cid, "name": name, "plate": r.get("plate"), "plate_src": r.get("plate_src"),
+                        **_summary("car_looks", "car_id", "cars", cid)})
+        return {"cars": out, "stats": c.stats}
+
+    @app.post("/api/cars")
+    def cars_add(name: str = Body(..., embed=True), plate: Optional[str] = Body(None, embed=True)):
+        name = name.strip()
+        if not name or len(name) > 40:
+            raise HTTPException(422, "name must be 1-40 characters")
+        if _name_taken(name):
+            raise HTTPException(409, "that name is already used")
+        cid = cars_or_503().add(name)
+        if plate and plate.strip():
+            cars_or_503().set_plate(cid, plate)
+        return {"id": cid}
+
+    @app.delete("/api/cars/{cid}")
+    def cars_remove(cid: int):
+        cars_or_503().remove(cid)
+        return {"ok": True}
+
+    @app.put("/api/cars/{cid}/plate")
+    def cars_plate(cid: int, plate: Optional[str] = Body(None, embed=True)):
+        """Type in or correct a vehicle's plate; empty clears it."""
+        if plate and len(plate) > 12:
+            raise HTTPException(422, "plate too long")
+        try:
+            return {"plate": cars_or_503().set_plate(cid, plate)}
+        except KeyError:
+            raise HTTPException(404)
+
+    @app.get("/api/cars/{cid}/confirmed")
+    def cars_confirmed(cid: int):
+        return cars_or_503().confirmed(cid)
+
+    @app.post("/api/cars/{cid}/cover")
+    def cars_cover(cid: int, look_id: int = Body(..., embed=True)):
+        return _set_cover("car_looks", "car_id", "cars", cid, look_id)
+
+    @app.get("/api/cars/{cid}/suggestions")
+    async def cars_suggest(cid: int, limit: int = 60):
+        return await asyncio.to_thread(cars_or_503().suggestions, cid, min(limit, 200))
+
+    @app.post("/api/car_looks/{lid}")
+    def car_verdict(lid: int, car_id: int = Body(..., embed=True), verdict: str = Body(..., embed=True)):
+        """verdict "yes": this is that vehicle (confirms it); "no": it isn't."""
+        c = cars_or_503()
+        try:
+            (c.confirm if verdict == "yes" else c.reject)(lid, car_id)
+        except KeyError:
+            raise HTTPException(404)
+        return {"ok": True}
+
+    @app.post("/api/detections/{det_id}/car")
+    async def detection_car(det_id: int, car_id: int = Body(..., embed=True)):
+        """'This is <vehicle>' from the event player. car_id 0: 'not it' (undo a wrong mark or match)."""
+        if car_id == 0:
+            return {"changed": await asyncio.to_thread(cars_or_503().unmark_detection, det_id)}
+        lid = await asyncio.to_thread(cars_or_503().enrol_detection, det_id, car_id)
+        if not lid:
+            raise HTTPException(422, "this vehicle is too small or has no snapshot to learn from")
         return {"look_id": lid}
 
     # ------------------------------------------------------------ animals named by example

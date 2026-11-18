@@ -736,7 +736,9 @@ async function openEvent(id, seek) {
       ${['dog', 'cat', 'bird'].includes(d.label) && ANIMAL_KINDS.length ? `<select class="animal" data-det="${d.id}" title="What animal is this? Later look-alikes get the same name">
         <option value="">What animal?</option>${ANIMAL_KINDS.filter(k => k !== (d.animal || d.label)).map(k => `<option value="${esc(k)}">This is a ${esc(k)}</option>`).join('')}</select>` : ''}
       ${(d.label === 'dog' || d.label === 'cat') && PETS.list.length ? `<select class="pet" data-det="${d.id}" title="Which pet is this? Teaches pet recognition">
-        <option value="">${d.who ? esc(d.who) : 'Which pet?'}</option>${d.who ? `<option value="0">Not ${esc(d.who)}</option>` : ''}${PETS.list.filter(p => p.name !== d.who).map(p => `<option value="${p.id}">This is ${esc(p.name)}</option>`).join('')}</select>` : ''}</span>`).join('') || '<span class="muted">none</span>'}</div>
+        <option value="">${d.who ? esc(d.who) : 'Which pet?'}</option>${d.who ? `<option value="0">Not ${esc(d.who)}</option>` : ''}${PETS.list.filter(p => p.name !== d.who).map(p => `<option value="${p.id}">This is ${esc(p.name)}</option>`).join('')}</select>` : ''}
+      ${VEHICLE_LABELS.includes(d.label) && CARS.list.length ? `<select class="car" data-det="${d.id}" title="Which of your vehicles is this? Teaches vehicle recognition">
+        <option value="">${d.who ? esc(d.who) : 'Which vehicle?'}</option>${d.who ? `<option value="0">Not ${esc(d.who)}</option>` : ''}${CARS.list.filter(p => p.name !== d.who).map(p => `<option value="${p.id}">This is ${esc(p.name)}</option>`).join('')}</select>` : ''}</span>`).join('') || '<span class="muted">none</span>'}</div>
     <div style="margin-top:6px"><b>Motion triggers</b>: ${e.motion.length} ${e.motion.map(m => `<span class="chip">zone ${m.zone_id || 'full'} · ${fmtDur(m.end_ts ? m.end_ts - m.start_ts : null)}</span>`).join(' ')}</div>
     <div style="margin-top:8px"><button id="pl-del" class="danger">Delete event</button></div>`;
   $$('#pl-info .det').forEach(d => d.onclick = ev => { if (ev.target.closest('select')) return; v.currentTime = +d.dataset.seek; v.play(); });
@@ -757,6 +759,12 @@ async function openEvent(id, seek) {
     if (s.value === '') return;
     s.disabled = true;
     try { await api(`/api/detections/${s.dataset.det}/pet`, { method: 'POST', body: { pet_id: +s.value } }); openEvent(id, v.currentTime); }
+    catch (err) { s.disabled = false; s.value = ''; alertInline(s, err.message.includes('422') ? 'Too small or no snapshot to learn from' : 'Failed: ' + err.message); }
+  });
+  $$('#pl-info select.car').forEach(s => s.onchange = async () => {
+    if (s.value === '') return;
+    s.disabled = true;
+    try { await api(`/api/detections/${s.dataset.det}/car`, { method: 'POST', body: { car_id: +s.value } }); openEvent(id, v.currentTime); }
     catch (err) { s.disabled = false; s.value = ''; alertInline(s, err.message.includes('422') ? 'Too small or no snapshot to learn from' : 'Failed: ' + err.message); }
   });
   if ($('#pl-pre')) {
@@ -1856,7 +1864,10 @@ function alertInline(el, msg) {           // a short note next to a control, ins
 }
 async function refreshPeople() { try { PEOPLE.list = (await api('/api/people')).people; } catch { PEOPLE.list = []; } }
 async function refreshPets() { try { PETS.list = (await api('/api/pets')).pets; } catch { PETS.list = []; } }
-refreshPeople(); refreshPets();
+const CARS = { list: [] };
+const VEHICLE_LABELS = ['car', 'truck', 'bus', 'motorcycle'];
+async function refreshCars() { try { CARS.list = (await api('/api/cars')).cars; } catch { CARS.list = []; } }
+refreshPeople(); refreshPets(); refreshCars();
 
 const PP = {
   person: { api: '/api/people', pic: id => `/api/faces/${id}`, owner: 'person_id', coverKey: 'face_id', word: 'Person',
@@ -1865,8 +1876,12 @@ const PP = {
   pet:    { api: '/api/pets', pic: id => `/api/pet_looks/${id}`, owner: 'pet_id', coverKey: 'look_id', word: 'Pet',
             store: PETS, none: n => `No confirmed pictures yet: choose “This is ${n}” on a dog or cat in a recording, or pick from the dogs and cats below.`,
             ask: (n, c) => c ? `Is this ${n}?` : `Dogs and cats seen: which are ${n}?`, empty: () => 'No suggestions yet. More appear as past sightings are looked through.' },
+  car:    { api: '/api/cars', pic: id => `/api/car_looks/${id}`, owner: 'car_id', coverKey: 'look_id', word: 'Vehicle',
+            store: CARS, none: n => `No confirmed pictures yet: choose “This is ${n}” on a vehicle in a recording, or pick from the vehicles below.`,
+            ask: (n, c) => c ? `Is this ${n}?` : `Vehicles seen driving by (and any with ${n}'s plate): which are ${n}?`,
+            empty: () => 'No suggestions yet. More appear as past sightings are looked through.' },
 };
-let ppOpen = null;                        // "person:3" / "pet:1": the tile that's open
+let ppOpen = null;                        // "person:3" / "pet:1" / "car:2": the tile that's open
 const ppItem = key => { const [k, id] = key.split(':'); return { kind: k, ...PP[k].store.list.find(p => p.id === +id) }; };
 
 // A face/pet picture plays the recording it came from, a moment before it was seen.
@@ -1878,30 +1893,36 @@ function faceImg(f, extra = '') {
 const coverImg = it => it.cover ? `<img class="face cover" loading="lazy" alt="" src="/media/${esc(it.cover.path)}">`
   : `<span class="face cover none" aria-hidden="true">${esc(it.name.slice(0, 1).toUpperCase())}</span>`;
 
-async function loadPeople() {
-  const [pr, tr] = await Promise.all([api('/api/people').catch(() => null), api('/api/pets').catch(() => null)]);
-  PEOPLE.list = pr?.people || []; PETS.list = tr?.pets || [];
-  const ps = pr?.stats || {}, ts = tr?.stats || {};
-  const left = [ps.scan_left && `${ps.scan_left} past people`, ts.scan_left && `${ts.scan_left} past dogs/cats`].filter(Boolean);
-  $('#pp-stats').textContent = [!pr ? 'face recognition unavailable' : !pr.models ? 'face models missing: people not recognised' : '',
-    left.length ? left.join(' and ') + ' still to look through' : ''].filter(Boolean).join(' · ');
-  $('#pp-add input[value="person"]').disabled = !pr;
-  const items = [...PEOPLE.list.map(p => ({ ...p, kind: 'person' })), ...PETS.list.map(p => ({ ...p, kind: 'pet' }))];
-  $('#pp-grid').innerHTML = items.map(it => `
+const ppTile = it => `
     <div class="pp-tile" data-k="${it.kind}:${it.id}">
       <button type="button" class="pp-head" aria-expanded="false" title="Show ${esc(it.name)}'s pictures and sightings to confirm">
         ${coverImg(it)}
         <span class="pp-name">${esc(it.name)}</span>
-        <span class="small muted">${PP[it.kind].word} · ${it.n_confirmed} picture${it.n_confirmed === 1 ? '' : 's'}</span>
+        <span class="small muted">${it.kind === 'car' && it.plate ? `<span class="chip plate">${esc(it.plate)}</span> ` : PP[it.kind].word + ' · '}${it.n_confirmed} picture${it.n_confirmed === 1 ? '' : 's'}</span>
       </button>
       <div class="pp-body" hidden></div>
-    </div>`).join('') || '<p class="muted">No one yet: add a person or pet above.</p>';
-  const open = ppOpen && $(`#pp-grid .pp-tile[data-k="${ppOpen}"]`);
+    </div>`;
+
+async function loadPeople() {
+  const [pr, tr, cr] = await Promise.all([api('/api/people').catch(() => null), api('/api/pets').catch(() => null),
+    api('/api/cars').catch(() => null)]);
+  PEOPLE.list = pr?.people || []; PETS.list = tr?.pets || []; CARS.list = cr?.cars || [];
+  const ps = pr?.stats || {}, ts = tr?.stats || {}, cs = cr?.stats || {};
+  const left = [ps.scan_left && `${ps.scan_left} past people`, ts.scan_left && `${ts.scan_left} dogs/cats`,
+    cs.scan_left && `${cs.scan_left} vehicles`].filter(Boolean);
+  $('#pp-stats').textContent = [!pr ? 'face recognition unavailable' : !pr.models ? 'face models missing: people not recognised' : '',
+    left.length ? left.join(', ') + ' still to look through' : ''].filter(Boolean).join(' · ');
+  $('#pp-add input[value="person"]').disabled = !pr;
+  $('#pp-grid').innerHTML = [...PEOPLE.list.map(p => ({ ...p, kind: 'person' })), ...PETS.list.map(p => ({ ...p, kind: 'pet' }))]
+    .map(ppTile).join('') || '<p class="muted">No one yet: add a person or pet above.</p>';
+  $('#veh-grid').innerHTML = CARS.list.map(p => ppTile({ ...p, kind: 'car' })).join('')
+    || '<p class="muted small">No vehicles yet: “+ Add” above, then choose Vehicle.</p>';
+  const open = ppOpen && $(`.pp-grid .pp-tile[data-k="${ppOpen}"]`);
   if (open) ppExpand(open); else ppOpen = null;
 }
 
 function ppExpand(tile) {
-  $$('#pp-grid .pp-tile.open').forEach(t => { if (t !== tile) ppCollapse(t); });
+  $$('.pp-grid .pp-tile.open').forEach(t => { if (t !== tile) ppCollapse(t); });
   tile.classList.add('open'); $('.pp-head', tile).setAttribute('aria-expanded', 'true');
   ppOpen = tile.dataset.k;
   ppFill(tile);
@@ -1930,6 +1951,12 @@ async function ppFill(tile) {
   body.innerHTML = `
     <div class="pp-meta small muted">${it.n_confirmed} confirmed · seen ${it.n_seen}×${it.last_seen ? ' · last ' + esc(fmtTime(it.last_seen)) : ''}
       <button type="button" class="danger small-btn" data-del title="Remove ${esc(it.name)} and their examples">Remove</button></div>
+    ${it.kind === 'car' ? `<form class="pp-plate row">
+      <label class="small">Licence plate <input name="plate" value="${esc(it.plate || '')}" maxlength="12" placeholder="none yet" autocomplete="off"></label>
+      <button type="submit" class="small-btn">Save plate</button>
+      <span class="small muted">${!it.plate ? 'Type it in, or it’s taken from the first confirmed sighting where the camera reads one.'
+        : it.plate_src === 'read' ? 'Read by the camera: correct it if it’s wrong.' : 'Entered by you.'}
+        A sighting with this plate is named ${esc(it.name)} whatever it looks like; one with a clearly different plate never is.</span></form>` : ''}
     <div class="sub-h">Pictures · ☆ chooses the main one, ✕ takes a wrong one off</div>
     <div class="faces">${conf.map(f => cfHtml(f, it)).join('') || `<span class="muted small">${esc(K.none(it.name))}</span>`}</div>
     <div class="sub-h">${esc(K.ask(it.name, it.n_confirmed))}</div>
@@ -1941,7 +1968,7 @@ async function ppFill(tile) {
     <div class="sg" data-fid="${f.id}">
       ${faceImg(f)}
       <div class="small muted">${esc(camName(f.camera_id))}<br>${esc(new Date(f.ts * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}</div>
-      <div class="small">${f.score != null ? Math.round(f.score * 100) + '%' : ''} ${f.status === 'auto' ? '· tagged' : ''}</div>
+      <div class="small">${f.plate ? `<span class="chip plate">${esc(f.plate)}</span> ` : ''}${f.score >= 1 && f.plate ? 'plate' : f.score != null ? Math.round(f.score * 100) + '%' : ''} ${f.status === 'auto' ? '· tagged' : ''}</div>
       <div class="row" style="gap:4px"><button type="button" data-v="yes" title="Yes, this is ${esc(it.name)}">✓</button>
         <button type="button" data-v="no" title="No, not ${esc(it.name)}">✗</button></div>
     </div>`).join('') || `<span class="muted small">${esc(K.empty(it.n_confirmed))}</span>`;
@@ -1951,7 +1978,22 @@ async function ppFill(tile) {
 let ppReloadTimer;
 function ppReloadSoon() { clearTimeout(ppReloadTimer); ppReloadTimer = setTimeout(loadPeople, 4000); }
 
-$('#pp-grid').onclick = async ev => {
+// Saving a vehicle's plate (typed in, or a correction of the one the camera read).
+$('#tab-people').addEventListener('submit', async ev => {
+  if (!ev.target.matches('.pp-plate')) return;
+  ev.preventDefault();
+  const f = ev.target, it = ppItem(f.closest('.pp-tile').dataset.k), btn = $('button', f);
+  btn.disabled = true;
+  try {
+    const r = await api(`/api/cars/${it.id}/plate`, { method: 'PUT', body: { plate: f.plate.value } });
+    f.plate.value = r.plate || '';
+    alertInline(btn, r.plate ? 'Saved: looking through past sightings again' : 'Plate cleared');
+    ppReloadSoon();
+  } catch (err) { alertInline(btn, 'Failed: ' + err.message); }
+  finally { btn.disabled = false; }
+});
+
+const ppClick = async ev => {
   const t = ev.target, tile = t.closest('.pp-tile');
   if (!tile) return;
   if (t.closest('.pp-head')) return tile.classList.contains('open') ? ppCollapse(tile) : ppExpand(tile);
@@ -1999,14 +2041,18 @@ $('#pp-grid').onclick = async ev => {
     ppOpen = null; loadPeople();
   }
 };
+$('#pp-grid').onclick = ppClick;
+$('#veh-grid').onclick = ppClick;
 
-// "+ Add person or pet" opens a small form to choose which, then name them.
+// "+ Add" opens a small form to choose a person, pet or vehicle, then name them.
 function ppAddHint() {
-  const f = $('#pp-add'), pet = f.kind.value === 'pet';
-  f.name.placeholder = pet ? "Pet's name" : 'Name';
-  $('#pp-add-hint').textContent = pet
-    ? 'Then click them below and pick their pictures from the dogs and cats seen. A handful from different cameras and times of day works best.'
-    : 'Then click them below and confirm the faces suggested, or choose “This is …” on a person in a recording. Faces need to be fairly close and turned toward the camera.';
+  const f = $('#pp-add'), kind = f.kind.value;
+  f.name.placeholder = { pet: "Pet's name", car: 'Name, e.g. Silver SUV' }[kind] || 'Name';
+  $('#pp-add-plate').hidden = kind !== 'car';
+  $('#pp-add-hint').textContent = {
+    pet: 'Then click them below and pick their pictures from the dogs and cats seen. A handful from different cameras and times of day works best.',
+    car: 'Plate optional: if you leave it out it’s read off the first sighting you confirm, and you can correct it. Then click the vehicle below and pick its pictures from the vehicles seen driving by: a few from different cameras, day and night.',
+  }[kind] || 'Then click them below and confirm the faces suggested, or choose “This is …” on a person in a recording. Faces need to be fairly close and turned toward the camera.';
 }
 function ppAddShow(on) {
   $('#pp-add').hidden = !on; $('#pp-add-btn').hidden = on; $('#pp-add-btn').setAttribute('aria-expanded', String(on));
@@ -2019,9 +2065,10 @@ $('#pp-add').onsubmit = async ev => {
   ev.preventDefault();
   const f = ev.target, kind = f.kind.value;
   try {
-    const r = await api(PP[kind].api, { method: 'POST', body: { name: f.name.value } });
+    const body = kind === 'car' ? { name: f.name.value, plate: f.plate.value } : { name: f.name.value };
+    const r = await api(PP[kind].api, { method: 'POST', body });
     ppAddShow(false); ppOpen = `${kind}:${r.id}`;
     await loadPeople();
-    $(`#pp-grid .pp-tile[data-k="${ppOpen}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    $(`.pp-grid .pp-tile[data-k="${ppOpen}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   } catch (err) { alertInline(f.querySelector('button[type=submit]'), err.message.includes('409') ? 'That name is already used' : 'Failed: ' + err.message); }
 };

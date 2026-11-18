@@ -313,7 +313,11 @@ img.face.cover, .face.cover { width: 96px; height: 96px; }
 .cf:hover .cf-star, .cf-star:focus, .cf.main .cf-star { opacity: 1; }
 @media (hover: none) { .cf-star { opacity: 1; } }
 .cf.main img.face { outline: 2px solid #ffd60a; }
-.pp-add[hidden], #pp-add-btn[hidden] { display: none; }
+.pp-add[hidden], #pp-add-btn[hidden], #pp-add-plate[hidden] { display: none; }
+.pp-section { margin: 22px 0 0; font-size: 15px; color: var(--muted); font-weight: 600; }
+.pp-plate { gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0 0; }
+.pp-plate input { width: 9em; text-transform: uppercase; font-family: ui-monospace, monospace; }
+.pp-plate .muted { flex-basis: 100%; }
 .pp-add { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
 .pp-kind { display: flex; gap: 16px; }
 .pp-kind label { display: inline-flex; align-items: center; gap: 6px; }

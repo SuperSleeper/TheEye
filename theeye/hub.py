@@ -73,6 +73,7 @@ class Hub:
         self.delivery = DeliveryClassifier(self.embedder, cfg.delivery.min_confidence) if self.embedder else None
         self.people = None                         # theeye.people.People, set by __main__ (needs the models folder)
         self.pets = None                           # theeye.pets.Pets, set by __main__
+        self.cars = None                           # theeye.cars.Cars, set by __main__
         self.wildlife = None                       # theeye.wildlife.AnimalExamples, set by __main__
         self.exhaust = None                        # theeye.exhaust.ExhaustWatch, set by __main__ (same)
         self.plates = PlateRefiner(self)
@@ -121,6 +122,8 @@ class Hub:
             threading.Thread(target=self.people.scan_past, name="face-scan", daemon=True).start()
         if self.pets:
             threading.Thread(target=self.pets.scan_past, name="pet-scan", daemon=True).start()
+        if self.cars:
+            threading.Thread(target=self.cars.scan_past, name="car-scan", daemon=True).start()
         threading.Thread(target=self._repair_interrupted, name="clip-repair", daemon=True).start()
         if self.exhaust:
             self.exhaust.start()
@@ -337,6 +340,11 @@ class Hub:
                 self.pets.on_track_end(t)
             except Exception:  # noqa: BLE001
                 log.exception("pet recognition failed")
+        if self.cars and t.label in self.cars.LABELS:
+            try:
+                self.cars.on_track_end(t)            # after vehicles.observe: drove somewhere, and its tracker id
+            except Exception:  # noqa: BLE001
+                log.exception("vehicle recognition failed")
         if self.wildlife:
             try:
                 self.wildlife.on_track_end(t)       # after Pets: it reuses the animal's picture Pets just made

@@ -22,7 +22,7 @@
         <button data-tab="rules" role="menuitem">Rules</button>
         <button data-tab="zones" role="menuitem">Zones</button>
         <button data-tab="triggers" role="menuitem">Motion log</button>
-        <button data-tab="people" role="menuitem">People &amp; Pets</button>
+        <button data-tab="people" role="menuitem">People, Pets &amp; Vehicles</button>
         <hr>
         <button type="button" id="logout" role="menuitem" title="Sign out of TheEye">Sign out</button>
       </div>
@@ -78,22 +78,27 @@
   <section id="tab-people" class="tab">
     <div class="setup">
       <div class="card-s">
-        <div class="card-h"><h2>People &amp; Pets</h2><span id="pp-stats" class="muted small"></span>
-          <button type="button" id="pp-add-btn" class="primary" aria-expanded="false">+ Add person or pet</button></div>
-        <p class="muted small">Family recognised by face, and dogs and cats by how they look, so recordings are tagged with
-          their name and search finds them (“sam yesterday”). Click someone to confirm more sightings of them or to
-          choose their main picture. Everything stays on this machine.</p>
+        <div class="card-h"><h2>People, Pets &amp; Vehicles</h2><span id="pp-stats" class="muted small"></span>
+          <button type="button" id="pp-add-btn" class="primary" aria-expanded="false">+ Add person, pet or vehicle</button></div>
+        <p class="muted small">Family recognised by face, dogs and cats by how they look, and your vehicles by look and
+          licence plate, so recordings of them arriving and leaving are tagged with the name and search finds them
+          (“sam yesterday”). Click one to confirm more sightings or to choose its main picture. Everything stays on
+          this machine.</p>
         <form id="pp-add" class="pp-add" hidden>
-          <div class="pp-kind" role="radiogroup" aria-label="Person or pet">
+          <div class="pp-kind" role="radiogroup" aria-label="Person, pet or vehicle">
             <label><input type="radio" name="kind" value="person" checked> Person</label>
             <label><input type="radio" name="kind" value="pet"> Pet (dog or cat)</label>
+            <label><input type="radio" name="kind" value="car"> Vehicle</label>
           </div>
           <div class="row" style="gap:8px"><input name="name" placeholder="Name" maxlength="40" required>
+            <input id="pp-add-plate" name="plate" placeholder="Licence plate (optional)" maxlength="12" autocomplete="off" hidden>
             <button type="submit" class="primary">Add</button><button type="button" id="pp-add-cancel">Cancel</button></div>
           <p id="pp-add-hint" class="muted small"></p>
         </form>
       </div>
       <div id="pp-grid" class="pp-grid"></div>
+      <h3 class="pp-section">Vehicles</h3>
+      <div id="veh-grid" class="pp-grid"></div>
     </div>
   </section>
 

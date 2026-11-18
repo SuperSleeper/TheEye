@@ -121,6 +121,30 @@ CREATE TABLE IF NOT EXISTS pet_looks (
 );
 CREATE INDEX IF NOT EXISTS pet_looks_pet ON pet_looks(pet_id);
 
+-- Your vehicles, named, recognised by look and plate (theeye.cars). Same flow as pets.
+CREATE TABLE IF NOT EXISTS cars (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    created REAL NOT NULL,
+    plate TEXT,                                 -- licence plate, letters and digits only
+    plate_src TEXT,                             -- you (typed in or corrected) | read (off a confirmed sighting)
+    cover INTEGER                               -- car_looks.id shown as its main picture (NULL = the clearest)
+);
+CREATE TABLE IF NOT EXISTS car_looks (
+    id INTEGER PRIMARY KEY,
+    detection_id INTEGER UNIQUE,
+    camera_id TEXT,
+    ts REAL,
+    size INTEGER,                               -- vehicle's size in px (larger = more reliable)
+    embedding BLOB NOT NULL,                    -- CLIP picture of the vehicle, normalised float32
+    path TEXT,                                  -- picture of the vehicle
+    car_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'unknown',     -- unknown | auto | confirmed | rejected
+    score REAL,                                 -- best similarity to a vehicle (1.0: its plate)
+    rejected TEXT                               -- JSON list of car ids this isn't
+);
+CREATE INDEX IF NOT EXISTS car_looks_car ON car_looks(car_id);
+
 -- Animals you named in the player ("this is a skunk"): kept as examples for later look-alikes (theeye.wildlife).
 CREATE TABLE IF NOT EXISTS animal_marks (
     detection_id INTEGER PRIMARY KEY,

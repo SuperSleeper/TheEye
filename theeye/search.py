@@ -175,6 +175,7 @@ class Searcher:
         self.animals = animals           # SubtypeClassifier: the animal / breed / species names it can give
         self.people = None               # theeye.people.People: names of recognised people
         self.pets = None                 # theeye.pets.Pets: names of recognised pets
+        self.cars = None                 # theeye.cars.Cars: names of your vehicles
 
     # --------------------------------------------------------------- LLM
     def interpret(self, q: str) -> dict[str, Any]:
@@ -223,9 +224,9 @@ class Searcher:
         return _apply_certainty(q, f)
 
     def _apply_people(self, q: str, f: dict) -> None:
-        """A family member's or pet's name ("rylan", "rylan yesterday") filters on who was recognised."""
-        names = (list(self.people.names().values()) if self.people else []) + \
-            (list(self.pets.names().values()) if self.pets else [])
+        """A family member's, pet's or vehicle's name ("sam", "sam yesterday") filters on who was recognised."""
+        names = [n for reg in (self.people, self.pets, self.cars) if reg
+                 for n in reg.names().values()]
         if not names:
             return
         low = " " + re.sub(r"[^a-z0-9 ]+", " ", q.lower()) + " "
@@ -233,7 +234,8 @@ class Searcher:
         if not found:
             return
         f["people"] = found
-        f["labels"] = [l for l in (f.get("labels") or []) if l not in ("person", "dog", "cat")]
+        f["labels"] = [l for l in (f.get("labels") or [])
+                       if l not in ("person", "dog", "cat", "car", "truck", "bus", "motorcycle")]
         vis = (f.get("visual") or "").lower()
         for n in found:
             vis = re.sub(rf"\b{re.escape(n.lower())}('?s)?\b", " ", vis)

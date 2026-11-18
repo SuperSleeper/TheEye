@@ -42,6 +42,8 @@ def main() -> None:
     searcher.people = hub.people
     from .pets import Pets
     hub.pets = searcher.pets = Pets(hub)
+    from .cars import Cars
+    hub.cars = searcher.cars = Cars(hub)
     from .wildlife import AnimalExamples
     hub.wildlife = AnimalExamples(hub)
     from .exhaust import ExhaustWatch
