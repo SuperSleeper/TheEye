@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 
 from .db import jload
-from .people import set_who
+from .people import drop_upload, save_upload, set_who
 
 log = logging.getLogger("theeye.looks")
 
@@ -168,6 +168,11 @@ class NamedLooks:
         row = self._row(look_id)
         if not row:
             raise KeyError(look_id)
+        if row["detection_id"] is None:          # an uploaded photo: "not it" just removes it
+            drop_upload(self.hub, self.LOOKS, self.REG, row)
+            self.reload()
+            self._rematch_soon()
+            return
         rejected = sorted(set(jload(row["rejected"], [])) | {pid})
         was = row["owner"] == pid
         self.db.execute(f"UPDATE {self.LOOKS} SET rejected=?, status=?, {self.OWNER}=? WHERE id=?",
@@ -179,6 +184,34 @@ class NamedLooks:
                 self.reload()
                 self._rematch_soon()
         self._match(self._row(look_id))
+
+    def add_upload(self, pid: int, img: np.ndarray, box: Optional[list[float]]) -> Optional[int]:
+        """A photo you uploaded: the part inside `box` (fractions of the photo; all of it when None) becomes a
+        confirmed picture. Returns its id, or None when it's too small or couldn't be read."""
+        if pid not in self._names:
+            raise KeyError(pid)
+        h, w = img.shape[:2]
+        x1, y1, x2, y2 = [float(v) for v in (box or [0, 0, 1, 1])]
+        x1, x2 = sorted((max(0.0, min(1.0, x1)) * w, max(0.0, min(1.0, x2)) * w))
+        y1, y2 = sorted((max(0.0, min(1.0, y1)) * h, max(0.0, min(1.0, y2)) * h))
+        crop = img[int(y1):int(y2), int(x1):int(x2)]
+        if crop.size == 0 or min(crop.shape[:2]) < 16 or self.hub.embedder is None:
+            return None
+        feat = self.hub.embedder.image(crop)
+        if feat is None:
+            return None
+        size = int(max(x2 - x1, y2 - y1))
+        # a square around it for the page, like the camera pictures
+        cx, cy, s = (x1 + x2) / 2, (y1 + y2) / 2, size * self.ROOM
+        sq = img[max(0, int(cy - s / 2)):int(cy + s / 2), max(0, int(cx - s / 2)):int(cx + s / 2)]
+        pic = cv2.resize(sq if sq.size else crop, (320, 320), interpolation=cv2.INTER_AREA)
+        rel = save_upload(self.hub, self.PREFIX, pid, pic)
+        lid = self.db.insert(f"INSERT INTO {self.LOOKS}(detection_id, camera_id, ts, size, embedding, path, {self.OWNER},"
+                             " status) VALUES(NULL,'upload',?,?,?,?,?,'confirmed')",
+                             (time.time(), size, feat.tobytes(), rel, pid))
+        self.reload()
+        self._rematch_soon()
+        return lid
 
     def enrol_detection(self, det_id: int, pid: int) -> Optional[int]:
         """'This is <name>' on a detection."""

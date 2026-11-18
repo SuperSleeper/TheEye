@@ -124,6 +124,11 @@ class People:
         row = self.db.one("SELECT * FROM faces WHERE id=?", (face_id,))
         if not row:
             raise KeyError(face_id)
+        if row["detection_id"] is None:          # an uploaded photo: "not them" just removes it
+            drop_upload(self.hub, "faces", "people", row)
+            self.reload()
+            threading.Thread(target=self.rematch_all, name="faces-rematch", daemon=True).start()
+            return
         rejected = sorted(set(jload(row["rejected"], [])) | {pid})
         was = row["person_id"] == pid
         self.db.execute("UPDATE faces SET rejected=?, status=?, person_id=? WHERE id=?",
@@ -148,6 +153,23 @@ class People:
                 self._set_who(det_id, None, old=row["who"])
                 n = 1
         return n
+
+    def add_upload(self, pid: int, img, box: Optional[list[float]]) -> Optional[int]:
+        """A photo you uploaded of this person: the clearest face in it (inside `box` when given) becomes a confirmed
+        face. Returns its id, or None when no face was found."""
+        if pid not in self._names:
+            raise KeyError(pid)
+        f = self.engine.best_face(img, box or [0.05, 0.05, 0.95, 0.98])   # best_face adds its margin back
+        if f is None:
+            return None
+        feat, aligned, size = f
+        rel = save_upload(self.hub, "face", pid, aligned)
+        fid = self.db.insert("INSERT INTO faces(detection_id, camera_id, ts, size, embedding, path, person_id, status)"
+                             " VALUES(NULL,'upload',?,?,?,?,?,'confirmed')",
+                             (time.time(), size, feat.tobytes(), rel, pid))
+        self.reload()
+        threading.Thread(target=self.rematch_all, name="faces-rematch", daemon=True).start()
+        return fid
 
     def enrol_detection(self, det_id: int, pid: int) -> Optional[int]:
         """'This is <person>' on a detection: use its face (finding it in the recording if needed)."""
@@ -190,7 +212,9 @@ class People:
                                            " WHERE person_id=? AND status='confirmed' ORDER BY ts DESC", (pid,)))
 
     # ------------------------------------------------------------ tags
-    def _set_who(self, det_id: int, name: Optional[str], old: Optional[str] = None) -> None:
+    def _set_who(self, det_id: Optional[int], name: Optional[str], old: Optional[str] = None) -> None:
+        if det_id is None:                       # an uploaded photo: no sighting to tag
+            return
         if name:
             self.hub.clear_service(det_id)       # family isn't the Amazon driver, whatever the vest
         set_who(self.hub, det_id, name, old)
@@ -286,6 +310,8 @@ class People:
 
 def set_who(hub, det_id: int, name: Optional[str], old: Optional[str] = None) -> None:
     """Name a detection (a person or a pet) or clear it, and keep its recordings' tags in step."""
+    if det_id is None:                           # an uploaded photo: no sighting to tag
+        return
     db = hub.db
     db.execute("UPDATE detections SET who=? WHERE id=?", (name, det_id))
     for r in db.all("SELECT event_id FROM event_links WHERE kind='detection' AND ref_id=?", (det_id,)):
@@ -306,3 +332,22 @@ def set_who(hub, det_id: int, name: Optional[str], old: Optional[str] = None) ->
                 hub._flush_event_meta(ev)
             else:
                 db.execute("UPDATE events SET labels=? WHERE id=?", (json.dumps(sorted(labels)), eid))
+
+
+# ---------------------------------------------------------------- uploaded photos (people, pets, vehicles)
+def save_upload(hub, prefix: str, owner: int, img) -> str:
+    """Store the picture made from an uploaded photo; returns its path under the data folder."""
+    rel = Path("snaps") / "faces" / "uploads" / f"{prefix}_{owner}_{int(time.time() * 1000)}.jpg"
+    (hub.data / rel).parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(hub.data / rel), img, [cv2.IMWRITE_JPEG_QUALITY, 92])
+    return str(rel)
+
+
+def drop_upload(hub, table: str, reg: str, row) -> None:
+    """Remove an uploaded photo (its picture row and file); it stops being the main picture if it was."""
+    hub.db.execute(f"DELETE FROM {table} WHERE id=?", (row["id"],))
+    hub.db.execute(f"UPDATE {reg} SET cover=NULL WHERE cover=?", (row["id"],))
+    try:
+        (hub.data / row["path"]).unlink()
+    except (OSError, TypeError):
+        pass

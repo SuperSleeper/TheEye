@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import struct
 import time
@@ -11,6 +12,8 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
+import cv2
+import numpy as np
 from fastapi import Body, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -535,16 +538,17 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
     # else the best automatic match). Table names come from the two call sites below, never from a request.
     def _summary(pics: str, owner: str, reg: str, pid: int) -> dict:
         cols = "id, detection_id, camera_id, ts, size, path"
-        n = db.one(f"SELECT SUM(status='confirmed') AS conf, COUNT(*) AS seen, MAX(ts) AS last FROM {pics}"
+        n = db.one(f"SELECT SUM(status='confirmed') AS conf, SUM(camera_id IS NOT 'upload') AS seen,"
+                   f" MAX(CASE WHEN camera_id IS NOT 'upload' THEN ts END) AS last FROM {pics}"
                    f" WHERE {owner}=? AND status IN ('auto','confirmed')", (pid,))
         chosen = (db.one(f"SELECT cover FROM {reg} WHERE id=?", (pid,)) or {}).get("cover")
         cover = chosen and db.one(f"SELECT {cols} FROM {pics} WHERE id=? AND {owner}=? AND status='confirmed'",
                                   (chosen, pid))
-        cover = cover or db.one(f"SELECT {cols} FROM {pics} WHERE {owner}=? AND status='confirmed'"
-                                " ORDER BY size DESC LIMIT 1", (pid,)) \
+        cover = cover or db.one(f"SELECT {cols} FROM {pics} WHERE {owner}=? AND status='confirmed'"     # uploads
+                                " ORDER BY camera_id='upload', size DESC LIMIT 1", (pid,)) \
             or db.one(f"SELECT {cols} FROM {pics} WHERE {owner}=? AND status='auto' ORDER BY score DESC LIMIT 1", (pid,))
         return {"cover": cover or None, "cover_chosen": bool(chosen and cover and cover["id"] == chosen),
-                "n_confirmed": n["conf"] or 0, "n_seen": n["seen"], "last_seen": n["last"]}
+                "n_confirmed": n["conf"] or 0, "n_seen": n["seen"] or 0, "last_seen": n["last"]}
 
     def _set_cover(pics: str, owner: str, reg: str, pid: int, pic_id: int) -> dict:
         if not db.one(f"SELECT 1 FROM {pics} WHERE id=? AND {owner}=? AND status='confirmed'", (pic_id, pid)):
@@ -556,6 +560,37 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         """Names are shared by people, pets and vehicles (they all end up in detections.who)."""
         taken = {n.lower() for reg in (hub.people, hub.pets, hub.cars) if reg for n in reg.names().values()}
         return name.lower() in taken
+
+    @app.post("/api/{kind}/{pid}/photo")
+    async def upload_photo(kind: str, pid: int, image: str = Body(..., embed=True),
+                           box: Optional[list[float]] = Body(None, embed=True), main: bool = Body(False, embed=True)):
+        """A photo you uploaded of a person, pet or vehicle (a data: URL; `box`: the part showing them, as
+        fractions of the photo) becomes a confirmed picture; `main` also makes it their main picture."""
+        reg = {"people": (hub.people, "faces", "person_id"), "pets": (hub.pets, "pet_looks", "pet_id"),
+               "cars": (hub.cars, "car_looks", "car_id")}.get(kind)
+        if not reg or not reg[0]:
+            raise HTTPException(404)
+        if box is not None and len(box) != 4:
+            raise HTTPException(422, "box needs 4 numbers")
+        try:
+            raw = base64.b64decode(image.split(",", 1)[-1], validate=False)
+        except ValueError:
+            raise HTTPException(422, "not an image")
+        if len(raw) > 20_000_000:
+            raise HTTPException(413, "photo too large")
+        img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            raise HTTPException(422, "couldn't read that image")
+        try:
+            pic_id = await asyncio.to_thread(reg[0].add_upload, pid, img, box)
+        except KeyError:
+            raise HTTPException(404)
+        if not pic_id:
+            raise HTTPException(422, "no face found in the photo" if kind == "people"
+                                else "the marked part is too small to use")
+        if main:
+            _set_cover(reg[1], reg[2], kind, pid, pic_id)
+        return {"id": pic_id}
 
     def people_or_503():
         if not hub.people:

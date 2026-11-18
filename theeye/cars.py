@@ -122,6 +122,8 @@ class Cars(NamedLooks):
             self._match(row)
 
     def on_confirm(self, row, pid: int) -> None:
+        if row["detection_id"] is None:
+            return
         # Its first confirmed sighting with a sure plate gives it a plate, if you haven't typed one in.
         if not self._plates.get(pid):
             plate = self.plate_of(row["detection_id"])

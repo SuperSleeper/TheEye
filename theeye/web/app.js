@@ -1930,6 +1930,8 @@ const ppItem = key => { const [k, id] = key.split(':'); return { kind: k, ...PP[
 
 // A face/pet picture plays the recording it came from, a moment before it was seen.
 function faceImg(f, extra = '') {
+  if (f.camera_id === 'upload')
+    return `<img class="face uploaded${extra}" loading="lazy" src="/media/${esc(f.path)}" title="Uploaded photo · ${esc(fmtTime(f.ts))}">`;
   return `<img class="face${f.event_id ? ' playable' : ''}${extra}" loading="lazy" src="/media/${esc(f.path)}"
     ${f.event_id ? `data-ev="${f.event_id}" data-seek="${f.seek}"` : ''}
     title="${esc(camName(f.camera_id))} · ${esc(fmtTime(f.ts))}${f.event_id ? ' · click to play' : ' · recording no longer kept'}">`;
@@ -1994,7 +1996,9 @@ async function ppFill(tile) {
   if (!tile.classList.contains('open')) return;
   body.innerHTML = `
     <div class="pp-meta small muted">${it.n_confirmed} confirmed · seen ${it.n_seen}×${it.last_seen ? ' · last ' + esc(fmtTime(it.last_seen)) : ''}
+      <button type="button" class="small-btn" data-upload title="Add a photo of ${esc(it.name)} you took yourself">⬆ Upload photo</button>
       <button type="button" class="danger small-btn" data-del title="Remove ${esc(it.name)} and their examples">Remove</button></div>
+    <div class="pp-upload" hidden></div>
     ${it.kind === 'car' ? `<form class="pp-plate row">
       <label class="small">Licence plate <input name="plate" value="${esc(it.plate || '')}" maxlength="12" placeholder="none yet" autocomplete="off"></label>
       <button type="submit" class="small-btn">Save plate</button>
@@ -2016,6 +2020,60 @@ async function ppFill(tile) {
       <div class="row" style="gap:4px"><button type="button" data-v="yes" title="Yes, this is ${esc(it.name)}">✓</button>
         <button type="button" data-v="no" title="No, not ${esc(it.name)}">✗</button></div>
     </div>`).join('') || `<span class="muted small">${esc(K.empty(it.n_confirmed))}</span>`;
+}
+
+// "Upload photo": pick a photo, mark the part showing them (needed for pets and vehicles, optional for a face),
+// optionally make it the main picture. It's shrunk to at most 1600 px here; the server keeps only the crop.
+function ppUploadStart(tile, it) {
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = 'image/*';
+  inp.onchange = () => { if (inp.files[0]) ppUploadShow(tile, it, inp.files[0]); };
+  inp.click();
+}
+async function ppUploadShow(tile, it, file) {
+  const K = PP[it.kind], box = $('.pp-upload', tile), person = it.kind === 'person';
+  const url = URL.createObjectURL(file), img = new Image();
+  try { await new Promise((ok, bad) => { img.onload = ok; img.onerror = bad; img.src = url; }); }
+  catch { alertInline($('[data-upload]', tile), 'Couldn’t read that image'); return; }
+  finally { setTimeout(() => URL.revokeObjectURL(url), 0); }
+  const k = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+  const cv = document.createElement('canvas');
+  cv.width = Math.round(img.naturalWidth * k); cv.height = Math.round(img.naturalHeight * k);
+  cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+  box.hidden = false;
+  box.innerHTML = `
+    <p class="small muted">${person ? 'The clearest face in the photo is used. With several people in it, drag a box around this one.'
+      : `Drag a box tightly around ${esc(it.name)}, or the background is learned too.`}
+      Photos taken from about where a camera sits (and at night, if you have one) help most.</p>
+    <div class="up-stage"><canvas class="up-view"></canvas><div class="up-box" hidden></div></div>
+    <div class="row up-actions"><label class="small"><input type="checkbox" name="main"> Make it ${esc(it.name)}’s main picture</label>
+      <button type="button" class="primary small-btn" data-go>Add photo</button><button type="button" class="small-btn" data-cancel>Cancel</button></div>`;
+  const view = $('.up-view', box), rect = $('.up-box', box);
+  view.width = cv.width; view.height = cv.height; view.getContext('2d').drawImage(cv, 0, 0);
+  let sel = null, start = null;
+  const pt = ev => { const r = view.getBoundingClientRect();
+    return [Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height))]; };
+  const draw = () => { rect.hidden = !sel; if (sel) Object.assign(rect.style, { left: sel[0] * 100 + '%', top: sel[1] * 100 + '%',
+    width: (sel[2] - sel[0]) * 100 + '%', height: (sel[3] - sel[1]) * 100 + '%' }); };
+  view.onpointerdown = ev => { view.setPointerCapture(ev.pointerId); start = pt(ev); sel = null; draw(); };
+  view.onpointermove = ev => { if (!start) return; const p = pt(ev);
+    sel = [Math.min(start[0], p[0]), Math.min(start[1], p[1]), Math.max(start[0], p[0]), Math.max(start[1], p[1])]; draw(); };
+  view.onpointerup = () => { start = null; if (sel && (sel[2] - sel[0] < 0.02 || sel[3] - sel[1] < 0.02)) { sel = null; draw(); } };
+  $('[data-cancel]', box).onclick = () => { box.hidden = true; box.innerHTML = ''; };
+  $('[data-go]', box).onclick = async ev => {
+    const b = ev.target;
+    b.disabled = true; b.textContent = 'Adding…';
+    try {
+      await api(`${K.api}/${it.id}/photo`, { method: 'POST',
+        body: { image: cv.toDataURL('image/jpeg', 0.92), box: sel, main: $('[name=main]', box).checked } });
+      box.hidden = true; box.innerHTML = '';
+      loadPeople();                   // the new picture, counts, the main picture; suggestions re-match meanwhile
+    } catch (err) {
+      b.disabled = false; b.textContent = 'Add photo';
+      alertInline(b, err.message.includes('422') ? (person ? 'No face found: drag a box around the face, or try a clearer photo'
+        : 'The marked part is too small: drag a bigger box') : 'Failed: ' + err.message);
+    }
+  };
 }
 
 // Redraw once the clicking stops, so the page doesn't jump around under the mouse.
@@ -2079,6 +2137,7 @@ const ppClick = async ev => {
     ppReloadSoon();      // counts, and suggestions re-matched against the new example (runs in the background)
     return;
   }
+  if (t.matches('[data-upload]')) return ppUploadStart(tile, it);
   if (t.matches('[data-del]')) {
     if (t.dataset.armed !== '1') { t.dataset.armed = '1'; t.textContent = 'Click again to remove'; return; }
     await api(`${K.api}/${it.id}`, { method: 'DELETE' });
