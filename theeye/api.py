@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, configapi
+from . import auth, configapi, retention
 from .config import save_config
 from .db import jload
 from .hub import LOG_MAX_BYTES, MOTION_KEEP_DAYS, SOUND_KEEP_DAYS, Hub
@@ -82,6 +82,7 @@ def _storage_scan(data: Path, hub: Hub, install: Path) -> dict:
             "log_limit_bytes": LOG_MAX_BYTES,
             "ram_bytes": sum(r["ram_bytes"] for r in cams), "ram_budget_bytes": hub.cfg.storage.ram_budget_gb * 1e9,
             "keep_days": {"motion": MOTION_KEEP_DAYS, "sound": SOUND_KEEP_DAYS},
+            "kinds": retention.usage(hub.clip_inventory()),
             "total_bytes": files + db_bytes + other, "clip_limit_bytes": hub.cfg.storage.max_gb * 1e9,
             "disk_total": disk.total, "disk_free": disk.free}
 
@@ -445,6 +446,16 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         e["detections"] = dets
         e["play_from"] = e["clip_offset"] + _play_lead_in(e, dets)
         return e
+
+    @app.put("/api/events/{eid}/keep")
+    def event_keep(eid: int, body: dict = Body(...)):
+        """Keep an event's recording for good (never deleted to make room), or let it go again."""
+        if not db.one("SELECT 1 FROM events WHERE id=?", (eid,)):
+            raise HTTPException(404)
+        keep = 1 if body.get("keep") else 0
+        db.execute("UPDATE events SET keep=? WHERE id=?", (keep, eid))
+        _storage_cache.clear()
+        return {"keep": bool(keep)}
 
     @app.delete("/api/events/{eid}")
     def event_delete(eid: int):

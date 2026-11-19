@@ -161,8 +161,16 @@ class LLMConfig(BaseModel):
     keep_alive: str = "5m"
 
 
+class KeepDays(BaseModel):
+    """How many days each kind of recording is kept (0 = until space runs out). See theeye.retention."""
+    important: float = Field(0, ge=0)      # people, animals, anything named, flagged vehicles, manual recordings
+    vehicles: float = Field(14, ge=0)      # vehicles only (mostly passing traffic)
+    other: float = Field(7, ge=0)          # motion or sound with nothing recognised
+
+
 class StorageConfig(BaseModel):
     path: str = "data"
+    keep_days: KeepDays = Field(default_factory=KeepDays)
     max_gb: float = 200.0              # "max useable": oldest event clips pruned beyond this
     ram_budget_gb: float = 16.0        # hard cap across all ring buffers
     # Each camera's share of max_gb, in percent (camera id -> %). Cameras not listed split what's left equally.

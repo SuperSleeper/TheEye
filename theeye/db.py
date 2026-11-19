@@ -240,6 +240,7 @@ class DB:
             "trigger_ts": "REAL",                         # when the rule fired (start_ts = trigger_ts - preroll)
             "thumb_score": "REAL NOT NULL DEFAULT 0",     # quality of the object-centered thumbnail in use
             "plates_refined": "REAL",                     # when plates were read again over the recording
+            "keep": "INTEGER NOT NULL DEFAULT 0",         # you chose to keep it: never deleted to make room
         },
         "vehicles": {
             "exhausts": "INTEGER NOT NULL DEFAULT 0",     # visits with a loud exhaust (theeye.exhaust)

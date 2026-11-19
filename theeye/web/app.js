@@ -618,7 +618,7 @@ const evCard = (e, i) => `
       ${e.snapshot_path ? `<img loading="lazy" src="/media/${esc(e.snapshot_path)}">` : '<img>'}
       <div class="body">
         <div class="title"><span>${esc(camName(e.camera_id))}</span><span class="muted">${fmtDur(e.end_ts ? e.end_ts - e.start_ts : null)}</span></div>
-        <div class="muted">${fmtTime(e.start_ts)} · ${esc(e.rule_name || e.source)}</div>
+        <div class="muted">${fmtTime(e.start_ts)} · ${esc(e.rule_name || e.source)}<span class="kept" title="Kept by you"${e.keep ? '' : ' hidden'}> · 📌</span></div>
         <div class="chips">${e.labels.map(l => `<span class="chip">${esc(l)}</span>`).join('')}${e.plates.map(p => `<span class="chip plate">${esc(p)}</span>`).join('')}</div>
       </div>
     </div>`;
@@ -768,7 +768,9 @@ async function openEvent(id, seek) {
       ${VEHICLE_LABELS.includes(d.label) && CARS.list.length ? `<select class="car" data-det="${d.id}" title="Which of your vehicles is this? Teaches vehicle recognition">
         <option value="">${d.who ? esc(d.who) : 'Which vehicle?'}</option>${d.who ? `<option value="0">Not ${esc(d.who)}</option>` : ''}${CARS.list.filter(p => p.name !== d.who).map(p => `<option value="${p.id}">This is ${esc(p.name)}</option>`).join('')}</select>` : ''}</span>`).join('') || '<span class="muted">none</span>'}</div>
     <div style="margin-top:6px"><b>Motion triggers</b>: ${e.motion.length} ${e.motion.map(m => `<span class="chip">zone ${m.zone_id || 'full'} · ${fmtDur(m.end_ts ? m.end_ts - m.start_ts : null)}</span>`).join(' ')}</div>
-    <div style="margin-top:8px"><button id="pl-del" class="danger">Delete event</button></div>`;
+    <div class="row" style="margin-top:8px;gap:8px"><button id="pl-keep" class="${e.keep ? 'on' : ''}" aria-pressed="${!!e.keep}"
+        title="${e.keep ? 'Kept: never deleted to make room. Click to let it go with the rest' : 'Keep this recording for good: never deleted to make room'}">${e.keep ? '📌 Kept' : '📌 Keep'}</button>
+      <button id="pl-del" class="danger">Delete event</button></div>`;
   $$('#pl-info .det').forEach(d => d.onclick = ev => { if (ev.target.closest('select, .plate-edit, .plate-form')) return; v.currentTime = +d.dataset.seek; v.play(); });
   // Correct (or type in) the plate on one sighting: it replaces the read in the recording's tags and search.
   $$('#pl-info .plate-edit').forEach(b => b.onclick = () => {
@@ -815,6 +817,14 @@ async function openEvent(id, seek) {
     $('#pl-pre').onclick = () => { v.currentTime = e.clip_offset; v.play(); };
     $('#pl-act').onclick = () => { v.currentTime = e.play_from ?? e.clip_offset; v.play(); };
   }
+  $('#pl-keep').onclick = async () => {
+    const j = await api(`/api/events/${id}/keep`, { method: 'PUT', body: JSON.stringify({ keep: !e.keep }) });
+    e.keep = j.keep;
+    const b = $('#pl-keep');
+    b.textContent = e.keep ? '📌 Kept' : '📌 Keep'; b.classList.toggle('on', e.keep); b.setAttribute('aria-pressed', e.keep);
+    const it = EVL.list.find(x => x.id == id);
+    if (it) { it.keep = e.keep; $(`#ev-list .card[data-id="${id}"] .kept`)?.toggleAttribute('hidden', !e.keep); }
+  };
   $('#pl-del').onclick = async () => { await api(`/api/events/${id}`, { method: 'DELETE' }); $('#player').close(); loadEvents(); };
   if (!$('#player').open) $('#player').showModal();
 }
@@ -1694,6 +1704,11 @@ function clipShares() {
   const pct = Object.fromEntries(ids.map(id => [id, given.includes(id) ? Math.max(0, +set[id]) * scale : each]));
   return { pct, given: new Set(given), sum, each, rest, limit: (+st.max_gb || 0) * 1e9 };
 }
+const KEEP_KINDS = [
+  ['important', 'People, animals & named', 'Anyone or any animal; your named people, pets and vehicles; flagged vehicles; manual recordings'],
+  ['vehicles', 'Vehicles only', 'Cars and other vehicles with nobody else: mostly passing traffic'],
+  ['other', 'Motion or sound only', 'Nothing recognised'],
+];
 function renderStorage() {
   const r = STOR, box = $('#cfg-storage');
   if (!r || !S.cfg) return;
@@ -1736,12 +1751,32 @@ function renderStorage() {
         <input type="number" min="1" step="1" id="stor-max" value="${S.cfg.storage.max_gb}"> GB</label></div>
     <div class="small">Clips use <b>${fmtBytes(used)}</b> of the ${fmtBytes(lim)} limit${used > lim * 0.9 ? ' <span class="warn">— nearly full: oldest clips are being deleted</span>' : ''}
       · everything in the data folder <b>${fmtBytes(r.total_bytes)}</b> · disk free ${fmtBytes(r.disk_free)} of ${fmtBytes(r.disk_total)}</div>
+    <div class="sub-h">How long recordings are kept</div>
+    <div class="tscroll"><table class="table kinds">
+      <thead><tr><th>Recording</th><th class="num">Size</th><th class="num">Per day</th><th class="num">Goes back</th><th class="num">Keep for</th></tr></thead>
+      <tbody>${KEEP_KINDS.map(([k, name, what]) => {
+        const u = r.kinds?.[k] || {}, age = u.oldest ? Math.max(0.1, (Date.now() / 1000 - u.oldest) / 86400) : 0;
+        const span = r.oldest_clip ? Math.max(1, (Date.now() / 1000 - r.oldest_clip) / 86400) : 1;
+        const v = S.cfg.storage.keep_days?.[k];
+        return `<tr><td><b>${name}</b><div class="small muted">${what}</div></td>
+          <td class="num">${fmtBytes(u.bytes || 0)} <span class="muted">· ${n(u.clips || 0)}</span></td>
+          <td class="num">${fmtBytes((u.bytes || 0) / span)}</td>
+          <td class="num">${u.oldest ? days(u.oldest) : '—'}</td>
+          <td class="num"><input type="number" min="0" step="1" data-keep="${k}" value="${v ? v : ''}" placeholder="no limit"
+            title="Delete these recordings once they are this many days old. Blank: keep until space runs out"> days</td></tr>`;
+      }).join('')}
+        <tr><td><b>📌 Kept by you</b><div class="small muted">Events you chose to keep (📌 Keep in the player). Also counted above</div></td>
+          <td class="num">${fmtBytes(r.kinds?.kept?.bytes || 0)} <span class="muted">· ${n(r.kinds?.kept?.clips || 0)}</span></td>
+          <td></td><td class="num">${r.kinds?.kept?.oldest ? days(r.kinds.kept.oldest) : '—'}</td><td class="num muted">forever</td></tr>
+      </tbody></table></div>
+    <p class="small muted">When clips reach max useable (or a camera its share), the oldest go first — but a vehicles-only
+      recording counts as twice its age and a motion/sound-only one four times, so people and animals are kept longest.</p>
     <div class="sub-h">What grows, and what keeps it in check</div>
     <div class="tscroll"><table class="table grows">
       <thead><tr><th>Data</th><th class="num">Size</th><th>Kept</th></tr></thead>
       <tbody>
         <tr><td>Video clips</td><td class="num">${fmtBytes(r.clips_bytes)} <span class="muted">· ${n(r.clips)}</span></td>
-          <td>Oldest deleted above the ${fmtBytes(lim)} limit${r.oldest_clip ? ` · now go back ${days(r.oldest_clip)}` : ''}</td></tr>
+          <td>By kind and age (above); oldest deleted above the ${fmtBytes(lim)} limit${r.oldest_clip ? ` · now go back ${days(r.oldest_clip)}` : ''}</td></tr>
         <tr><td>Snapshots</td><td class="num">${fmtBytes(r.snaps_bytes)} <span class="muted">· ${n(r.snaps)}</span></td>
           <td>As far back as the clips; older ones are deleted with them (each vehicle keeps its picture)${r.oldest_snap ? ` · now go back ${days(r.oldest_snap)}` : ''}</td></tr>
         <tr><td>Database</td><td class="num">${fmtBytes(r.database_bytes)}</td>
@@ -1765,6 +1800,8 @@ $('#cfg-storage').addEventListener('change', e => {
   const el = e.target;
   if (el.id === 'stor-max') {
     if (+el.value >= 1) S.cfg.storage.max_gb = +el.value;
+  } else if (el.dataset.keep) {
+    S.cfg.storage.keep_days = { ...(S.cfg.storage.keep_days || {}), [el.dataset.keep]: Math.max(0, +el.value || 0) };
   } else if (el.dataset.share) {
     const m = { ...(S.cfg.storage.camera_share || {}) };
     if (el.value === '') delete m[el.dataset.share]; else m[el.dataset.share] = Math.min(100, Math.max(0, +el.value));
@@ -1773,7 +1810,8 @@ $('#cfg-storage').addEventListener('change', e => {
   markDirty();
   setTimeout(() => {                       // after focus has moved on (Tab), so it can be put back there
     const a = document.activeElement, key = a?.id === 'stor-max' ? '#stor-max'
-      : a?.dataset?.share ? `#cfg-storage [data-share="${CSS.escape(a.dataset.share)}"]` : null;
+      : a?.dataset?.share ? `#cfg-storage [data-share="${CSS.escape(a.dataset.share)}"]`
+      : a?.dataset?.keep ? `#cfg-storage [data-keep="${CSS.escape(a.dataset.keep)}"]` : null;
     renderStorage();
     if (key) $(key)?.focus();
   });

@@ -32,7 +32,7 @@ from .motion import MotionEngine, Zone
 from .recorder import RecordingManager
 from .vehicles import VehicleRegistry
 from .rules import CamState, Rule, evaluate, is_loud
-from . import gpu
+from . import gpu, retention
 from .plates import PlateRefiner
 from .delivery import PERSON_LABELS, SERVICES, VEHICLE_LABELS, DeliveryClassifier
 from .subtypes import ANIMAL_LABELS, SubtypeClassifier
@@ -834,36 +834,37 @@ class Hub:
             if free < 5e9:
                 log.warning("low disk space: %.1f GB free", free / 1e9)
 
-    def _prune_clips(self) -> None:
-        """Delete each camera's oldest clips once it's past its share of storage.max_gb (camera_share; cameras
-        without one split the rest equally), then the oldest overall if clips still exceed max_gb (e.g. from
-        cameras since removed)."""
+    def clip_inventory(self) -> list[retention.Clip]:
+        """Every clip on disk, with the kind of event it holds (theeye.retention) and whether you kept it."""
         clips = self.data / "clips"
-        files = sorted(((p, p.stat()) for p in clips.rglob("*.mp4")), key=lambda x: x[1].st_mtime)
-        active = {w["path"] for w in self.rec.active().values()}
-        cam_of = lambda p: p.relative_to(clips).parts[0]          # noqa: E731  clips/<camera>/<day>/<file>
-        quotas = self.cfg.storage.clip_quotas([c.id for c in self.cfg.cameras])
-        used: dict[str, int] = {}
-        for p, st in files:
-            used[cam_of(p)] = used.get(cam_of(p), 0) + st.st_size
-        total = sum(used.values())
-        n = 0
-        for p, st in files:
-            cam = cam_of(p)
-            over_cam = cam in quotas and used[cam] > quotas[cam]
-            if not over_cam and total <= self.cfg.storage.max_gb * 1e9:
+        by_path = retention.clips_by_path(self.db.all(retention.EVENTS_SQL))
+        out = []
+        for p in clips.rglob("*.mp4"):
+            try:
+                st = p.stat()
+            except OSError:                  # deleted meanwhile
                 continue
             rel = str(p.relative_to(self.data))
-            if rel in active:
-                continue
-            p.unlink(missing_ok=True)
-            used[cam] -= st.st_size
-            total -= st.st_size
-            self.db.execute("UPDATE events SET clip_path=NULL WHERE clip_path=?", (rel,))
-            n += 1
-            log.info("retention: deleted %s (%s)", rel, "camera over its share" if over_cam else "over max useable")
-        if n:
-            log.info("retention: deleted %d clips", n)
+            tier, keep, start = by_path.get(rel, ("other", False, st.st_mtime))
+            out.append(retention.Clip(rel, p.relative_to(clips).parts[0], st.st_size, start, tier, keep))
+        return out
+
+    def _prune_clips(self) -> None:
+        """Delete clips past their kind's age limit (storage.keep_days), then, while a camera is past its share of
+        storage.max_gb (camera_share) or all clips are past max_gb, the oldest - passing vehicles and plain
+        motion going sooner than people and animals. Kept events are never deleted (theeye.retention)."""
+        st = self.cfg.storage
+        active = {w["path"] for w in self.rec.active().values()}
+        doomed = retention.plan(self.clip_inventory(), time.time(), st.keep_days.model_dump(),
+                                st.clip_quotas([c.id for c in self.cfg.cameras]), st.max_gb * 1e9, active)
+        why: dict[str, int] = {}
+        for c, reason in doomed:
+            (self.data / c.rel).unlink(missing_ok=True)
+            self.db.execute("UPDATE events SET clip_path=NULL WHERE clip_path=?", (c.rel,))
+            why[reason] = why.get(reason, 0) + 1
+            log.debug("retention: deleted %s (%s)", c.rel, reason)
+        if doomed:
+            log.info("retention: deleted %d clips (%s)", len(doomed), ", ".join(f"{n} {r}" for r, n in why.items()))
 
     def _prune_snapshots(self) -> None:
         """Keep pictures only as far back as video goes (the oldest event that still has its clip).

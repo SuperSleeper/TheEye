@@ -357,3 +357,5 @@ html:has(dialog#player[open]) { overflow: hidden; }   /* no page scrollbar besid
 .up-box[hidden] { display: none; }
 .up-actions { gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
 img.face.uploaded { border-style: dashed; border-color: var(--accent, #4ea1ff); }
+#pl-keep.on { border-color: var(--accent); color: var(--accent); }
+.table.kinds input[type=number] { width: 5.5em; }
