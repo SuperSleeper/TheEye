@@ -36,7 +36,14 @@ class Embedder:
         with self._lock:
             dev = device if (device == "cpu" or torch.cuda.is_available()) else "cpu"
             if self._model is not None and dev != self.device:
-                self._model.to(dev)
+                try:
+                    self._model.to(dev)
+                except Exception as e:  # noqa: BLE001
+                    # e.g. the GPU is full (another program's model): a move that fails part way leaves some
+                    # layers on each device, and every picture after that failed. Put it all back on the CPU.
+                    log.warning("CLIP: couldn't move to %s (%s); staying on the CPU", dev, str(e).splitlines()[0][:120])
+                    self._model.to("cpu")
+                    dev = "cpu"
                 if dev == "cpu" and torch.cuda.is_available():
                     torch.cuda.empty_cache()
             self.device = dev
