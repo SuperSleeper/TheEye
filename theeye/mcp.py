@@ -205,6 +205,7 @@ class _Tools:
         self.db = db
         self.vision = _Vision(hub)
         self.last_shown: dict = {"ts": 0.0, "ids": [], "title": ""}
+        self.last_query: dict = {"ts": 0.0}
 
     # id <-> display name, accepting either from the model
     def _cam_id(self, cam: str | None) -> str | None:
@@ -293,6 +294,16 @@ class _Tools:
                 k2 = k[:-1] if k.endswith("s") and k[:-1] in names else k     # "bucko's"
                 if k2 in names:
                     return names[k2][0]
+        # Speech-to-text spellings: "Brandy" for Brandi, "Bucco" for Buck-O, "Raylan" for Rylan.
+        import difflib
+        for n in (3, 2, 1):
+            for i in range(len(words) - n + 1):
+                k = "".join(words[i:i + n])
+                if len(k) < 4:
+                    continue
+                close = difflib.get_close_matches(k, list(names), n=1, cutoff=0.8)
+                if close:
+                    return names[close[0]][0]
         return None
 
     def _label(self, text: str | None) -> str | None:
@@ -330,10 +341,16 @@ class _Tools:
             where.append("d.camera_id = ?")
             args.append(self._cam_id(camera))
         rows = self.db.all(
-            "SELECT d.id, d.camera_id, d.label, d.who, d.first_ts, d.last_ts, d.plate, "
-            " COALESCE(d.event_id, (SELECT l.event_id FROM event_links l WHERE l.kind='detection' AND l.ref_id=d.id "
-            "  LIMIT 1)) AS ev "
+            "SELECT d.id, d.camera_id, d.label, d.who, d.first_ts, d.last_ts, d.plate, d.event_id AS ev "
             f"FROM detections d WHERE {' AND '.join(where)} ORDER BY d.first_ts DESC LIMIT ?", args + [int(limit)])
+        missing = [r["id"] for r in rows if not r["ev"]]
+        if missing:                                   # clips linked the other way, looked up for just these rows
+            links = self.db.all(
+                f"SELECT ref_id, event_id FROM event_links WHERE kind='detection' AND ref_id IN ({','.join('?' * len(missing))})",
+                missing)
+            linked = {l["ref_id"]: l["event_id"] for l in links}
+            for r in rows:
+                r["ev"] = r["ev"] or linked.get(r["id"])
         out = []
         for r in rows:
             e = self.db.one("SELECT clip_path, clip_offset, start_ts FROM events WHERE id = ?", (r["ev"],)) if r["ev"] else None
@@ -359,20 +376,39 @@ class _Tools:
             visits.append({**r, "start": r["first_ts"], "n": 1})
         return visits
 
+    def _their_car(self, name: str | None) -> str | None:
+        """Brandi -> "Brandi's Car": comings and goings often show up as the car, not the face."""
+        if not name:
+            return None
+        kinds = {n: k for n, k in self._names().values()}
+        if kinds.get(name) != "person":
+            return None
+        return next((n for n, k in kinds.items() if k == "vehicle" and _canon(n).startswith(_canon(name))), None)
+
     def _describe(self, r: dict) -> str:
         what = r["who"] + (f" ({r['label']})" if r["label"] not in ("person", "car") else "") if r.get("who") else r["label"]
         return f"{what} on {self._cam_name(r['camera_id'])}, {_ago(r['start'] if 'start' in r else r['first_ts'])}"
 
     def find_sightings(self, who: str | None = None, what: str | None = None, camera: str | None = None,
-                       when: str | None = None, hours: float | None = None) -> str:
+                       when: str | None = None, hours: float | None = None, **_ignored: Any) -> str:
         name = self._who(who) or self._who(what)
         label = None if name else (self._label(what) or self._label(who))
         if (who or what) and not name and not label:
             known = ", ".join(n for n, _ in self._names().values())
             return f"I don't know {who or what!r}. Known names: {known}."
+        self.last_query = {"ts": time.time(), "who": name, "label": label, "camera": camera, "when": when}
         rows, span = self._sightings(name, label, camera, when, hours)
         thing = name or (label + "s" if label else "anything")
         scope = f" on {self._cam_name(self._cam_id(camera))}" if camera else ""
+        car = self._their_car(name)
+        if not rows and car:
+            crow, _ = self._sightings(car, None, camera, when, hours)
+            if crow:
+                self.last_query.update(who=car)
+                visits = self._visits(crow)
+                return (f"I didn't recognise {name} in person{scope} in {span}, but {car} was seen "
+                        f"(probably {name} arriving or leaving):\n"
+                        + "\n".join(f"- {self._describe(v)}" + (" [video]" if v["clip"] else "") for v in visits[:6]))
         if not rows:
             return f"No sightings of {thing}{scope} in {span}."
         visits = self._visits(rows)
@@ -383,10 +419,23 @@ class _Tools:
         return "\n".join(out)
 
     def show_recording(self, who: str | None = None, what: str | None = None, camera: str | None = None,
-                       when: str | None = None, which: str = "latest") -> str:
+                       when: str | None = None, which: str = "latest", **_ignored: Any) -> str:
         name = self._who(who) or self._who(what)
         label = None if name else (self._label(what) or self._label(who))
+        lq = self.last_query
+        if not (name or label or camera) and time.time() - lq.get("ts", 0) < 600:
+            # "show me the video" right after a search: play what that search found
+            name, label, camera, when = lq["who"], lq["label"], camera or lq["camera"], when or lq["when"]
+        if not (name or label or camera or when):
+            return "Which video? Tell me who or what (for example Bear-Bear, a delivery, a car) and roughly when."
         rows, span = self._sightings(name, label, camera, when, None if when else 24 * 7, limit=200, need_clip=True)
+        car = self._their_car(name)
+        note = ""
+        if not rows and car:
+            rows, span = self._sightings(car, None, camera, when, None if when else 24 * 7, limit=200, need_clip=True)
+            if rows:
+                note = f"I didn't recognise {name} in person, so this is {car} instead. "
+                name = car
         thing = name or (label or "anything")
         scope = f" on {self._cam_name(self._cam_id(camera))}" if camera else ""
         if not rows:
@@ -396,14 +445,17 @@ class _Tools:
         playlist = [pick] + [v for v in visits if v is not pick][:5]
         self.last_shown = {"ts": time.time(), "ids": [v["id"] for v in playlist], "title": f"{thing}{scope}"}
         more = len(visits) - 1
-        return (f"Playing the video of {self._describe(pick)} on the dashboard now."
+        return (note + f"Playing the video of {self._describe(pick)} on the dashboard now."
                 + (f" The {min(more, 5)} visit(s) before it are lined up below it ({more} recorded in {span} in all)."
                    if more else ""))
 
     def recent_activity(self, camera: str | None = None, label: str | None = None,
-                        hours: float = 24, limit: int = 15) -> str:
-        if self._who(label):                       # "bear bear" is a name, not a detector label
-            return self.find_sightings(who=label, camera=camera, hours=hours)
+                        hours: float = 24, limit: int = 15, who: str | None = None, what: str | None = None,
+                        when: str | None = None, **_ignored: Any) -> str:
+        # Small models mix up the arguments of the two tools: take theirs rather than fail.
+        if who or when or self._who(label) or self._who(what):   # "bear bear" is a name, not a detector label
+            return self.find_sightings(who=who or label, what=what, camera=camera, when=when, hours=hours)
+        label = label or what
         label = self._label(label) or label
         where, args = ["first_ts > ?"], [dt.datetime.now().timestamp() - float(hours) * 3600]
         if camera:
