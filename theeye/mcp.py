@@ -225,6 +225,12 @@ class _Tools:
             for cid, name in names.items():
                 if _canon(name) == "frontporch":
                     return cid
+        # Speech-to-text spellings of camera names: "drive way", "front yaard" -> Driveway, Front Yard.
+        import difflib
+        by_key = {_canon(n): cid for cid, n in names.items()}
+        close = difflib.get_close_matches(key, list(by_key), n=1, cutoff=0.72)
+        if close:
+            return by_key[close[0]]
         return cam  # unknown: let the query return nothing rather than guess
 
     def _cam_name(self, cid: str | None) -> str:
