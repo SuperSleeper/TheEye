@@ -48,6 +48,11 @@ def _ago(ts: float | None) -> str:
 VEHICLE_LABELS = ("car", "truck", "bus", "motorcycle")
 
 
+LIVE_MAX = 8                      # concurrent live streams for the dashboard
+_live_count = {"n": 0}
+_live_lock = threading.Lock()
+
+
 def _canon(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
 
@@ -803,6 +808,8 @@ def _handler_factory(tools: _Tools, token_ok: Callable[[str | None], bool]):
                         self.end_headers()
                         self.wfile.write(jpg)
                         return None
+                    if parts[2] == "live.mp4":
+                        return self._live(cam)
                     if parts[2] == "look.json":
                         res = tools.vision.look(cid)
                         res["name"] = tools._cam_name(cid)
@@ -867,6 +874,43 @@ def _handler_factory(tools: _Tools, token_ok: Callable[[str | None], bool]):
                     except (BrokenPipeError, ConnectionResetError):
                         break
                     left -= len(chunk)
+            return None
+
+        def _live(self, cam):
+            """Smooth live video for the dashboard: the camera's own H.264 as an endless fragmented MP4, from TheEye's
+            RAM loop (no extra camera connection, no re-encoding) -- the same LiveMP4 TheEye's full view plays."""
+            from .recorder import LiveMP4
+            if cam.template_stream is None or cam.status.get("main") != "live":
+                return self._send(503, {"error": "camera is not streaming"})
+            with _live_lock:
+                if _live_count["n"] >= LIVE_MAX:
+                    return self._send(503, {"error": "too many live streams"})
+                _live_count["n"] += 1
+            ls = None
+            try:
+                audio = "audio=1" in (self.path.split("?", 1)[1] if "?" in self.path else "")
+                ls = LiveMP4(cam, audio)
+                self.close_connection = True
+                self.send_response(200)
+                self.send_header("Content-Type", "video/mp4")
+                self.send_header("X-Mime", ls.mime)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                while True:
+                    chunk = ls.read(1.0)
+                    if chunk is None:
+                        break
+                    if chunk:
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass                                    # the viewer went away
+            finally:
+                if ls is not None:
+                    ls.close()
+                with _live_lock:
+                    _live_count["n"] -= 1
             return None
 
         def _identify(self):
