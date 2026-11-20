@@ -300,6 +300,17 @@ class _Tools:
             out.append("Recently seen here: " + ", ".join(f"{r['who']} {_ago(r['ts'])}" for r in seen))
         return "\n".join(out)
 
+    def show_cameras(self, cameras: Any = None) -> str:
+        if isinstance(cameras, str):                 # small models sometimes send "Driveway, Front Porch"
+            import re
+            cameras = [c for c in re.split(r"\s*(?:,|\band\b|&)\s*", cameras) if c.strip()]
+        cameras = [str(c).strip() for c in (cameras or []) if str(c).strip()]
+        if not cameras:
+            return "Which cameras? Cameras: " + ", ".join(self.searcher.cameras.values())
+        parts = [self.look_at_camera(c) for c in cameras[:6]]
+        return "\n\n".join(p.replace(" (it is now on the dashboard)", "") for p in parts) + \
+            "\n(All of these cameras are now on the dashboard, side by side.)"
+
     def parked_cars(self, camera: str | None = None) -> str:
         camera = None          # always every camera: small models kept narrowing it to the wrong one
         cams = list(self.hub.cams)
@@ -381,6 +392,14 @@ TOOL_SCHEMAS = [
      "inputSchema": {"type": "object", "properties": {
          "camera": {"type": "string", "description": "Camera name, e.g. Front Porch, Driveway, Back Yard."}},
          "required": ["camera"]}},
+    {"name": "show_cameras",
+     "description": "Show SEVERAL cameras at once on the dashboard, side by side, and say who and what is on each "
+                    "right now. Use when the user asks for more than one camera, e.g. 'show me the driveway and the "
+                    "front porch', 'show me the front and back yard'. Pass every camera they named.",
+     "inputSchema": {"type": "object", "properties": {
+         "cameras": {"type": "array", "items": {"type": "string"},
+                     "description": "Camera names, e.g. [\"Driveway\", \"Front Porch\"]."}},
+         "required": ["cameras"]}},
     {"name": "parked_cars",
      "description": "Which vehicles are in view right now across all cameras (or one), and whose they are "
                     "(Eric's, Rylan's, ...) by plate or appearance. Use for 'whose car is outside', 'is Rylan "
