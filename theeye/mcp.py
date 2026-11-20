@@ -12,6 +12,7 @@ import datetime as dt
 import json
 import logging
 import threading
+import re
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
@@ -43,6 +44,10 @@ def _ago(ts: float | None) -> str:
 
 
 VEHICLE_LABELS = ("car", "truck", "bus", "motorcycle")
+
+
+def _canon(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
 
 
 class _Vision:
@@ -199,6 +204,7 @@ class _Tools:
         self.searcher = searcher
         self.db = db
         self.vision = _Vision(hub)
+        self.last_shown: dict = {"ts": 0.0, "ids": [], "title": ""}
 
     # id <-> display name, accepting either from the model
     def _cam_id(self, cam: str | None) -> str | None:
@@ -210,6 +216,14 @@ class _Tools:
         for cid, name in names.items():
             if name.lower() == cam.lower():
                 return cid
+        key = _canon(re.sub(r"\b(the|camera|cam)\b", " ", cam.lower()))     # "the backyard camera" -> backyard
+        for cid, name in names.items():
+            if key and key == _canon(name):
+                return cid
+        if key in ("frontdoor", "door", "porch"):
+            for cid, name in names.items():
+                if _canon(name) == "frontporch":
+                    return cid
         return cam  # unknown: let the query return nothing rather than guess
 
     def _cam_name(self, cid: str | None) -> str:
@@ -225,6 +239,9 @@ class _Tools:
     def search_history(self, query: str, camera: str | None = None) -> str:
         if not query or not query.strip():
             return "Please provide something to search for."
+        name = self._who(query)
+        if name:
+            return self.find_sightings(who=name, camera=camera, when=query)
         cams = [self._cam_id(camera)] if camera else None
         res = self.searcher.search(query.strip(), cams)
         rows = res.get("results") or []
@@ -243,8 +260,151 @@ class _Tools:
             out.append(line)
         return "\n".join(out)
 
+    # ---- names (people, pets, cars) and object words, matched the way people say them ---------------------
+    LABEL_WORDS = {"dog": "dog", "dogs": "dog", "puppy": "dog", "puppies": "dog", "cat": "cat", "cats": "cat",
+                   "kitty": "cat", "person": "person", "people": "person", "someone": "person", "anyone": "person",
+                   "anybody": "person", "visitor": "person", "visitors": "person", "man": "person", "woman": "person",
+                   "car": "car", "cars": "car", "vehicle": "car", "vehicles": "car", "truck": "truck", "trucks": "truck",
+                   "bike": "bicycle", "bicycle": "bicycle", "motorcycle": "motorcycle", "bird": "bird", "birds": "bird",
+                   "bear": "bear"}
+
+    def _names(self) -> dict[str, tuple[str, str]]:
+        """canonical key -> (name, kind) for every named person, pet and car."""
+        out = {}
+        for kind, reg in (("person", getattr(self.hub, "people", None)), ("pet", getattr(self.hub, "pets", None)),
+                          ("vehicle", getattr(self.hub, "cars", None))):
+            if reg is not None:
+                for n in reg.names().values():
+                    out[_canon(n)] = (n, kind)
+        return out
+
+    def _who(self, text: str | None) -> str | None:
+        """A known name said any way ("bear bear", "Bear-Bear", "bucko" for Buck-O) -> its exact name."""
+        if not text:
+            return None
+        names = self._names()
+        key = _canon(text)
+        if key in names:
+            return names[key][0]
+        words = re.findall(r"[a-z0-9]+", text.lower())
+        for n in (3, 2, 1):                      # longest phrase first, whole words only
+            for i in range(len(words) - n + 1):
+                k = "".join(words[i:i + n])
+                k2 = k[:-1] if k.endswith("s") and k[:-1] in names else k     # "bucko's"
+                if k2 in names:
+                    return names[k2][0]
+        return None
+
+    def _label(self, text: str | None) -> str | None:
+        if not text:
+            return None
+        for w in re.findall(r"[a-z]+", text.lower()):
+            if w in self.LABEL_WORDS:
+                return self.LABEL_WORDS[w]
+        return None
+
+    def _window(self, when: str | None, hours: float | None) -> tuple[float, float, str]:
+        """(start, end, how it was understood) from words like 'this morning' or 'yesterday at 5pm'."""
+        now = time.time()
+        if when:
+            from .timeparse import parse
+            tr = parse(when)
+            if tr.start or tr.end:
+                st = tr.start.timestamp() if tr.start else 0.0
+                en = tr.end.timestamp() if tr.end else now
+                return st, min(en, now), tr.label or when
+        h = float(hours or 24)
+        return now - h * 3600, now, f"the last {h:g}h"
+
+    def _sightings(self, who=None, what=None, camera=None, when=None, hours=None, limit=60, need_clip=False):
+        """Matching detections, newest first, each with its clip (if recorded) and where in the clip to start."""
+        st, en, span = self._window(when, hours)
+        where, args = ["d.first_ts >= ?", "d.first_ts <= ?"], [st, en]
+        if who:
+            where.append("d.who = ?")
+            args.append(who)
+        if what:
+            where.append("d.label = ?")
+            args.append(what)
+        if camera:
+            where.append("d.camera_id = ?")
+            args.append(self._cam_id(camera))
+        rows = self.db.all(
+            "SELECT d.id, d.camera_id, d.label, d.who, d.first_ts, d.last_ts, d.plate, "
+            " COALESCE(d.event_id, (SELECT l.event_id FROM event_links l WHERE l.kind='detection' AND l.ref_id=d.id "
+            "  LIMIT 1)) AS ev "
+            f"FROM detections d WHERE {' AND '.join(where)} ORDER BY d.first_ts DESC LIMIT ?", args + [int(limit)])
+        out = []
+        for r in rows:
+            e = self.db.one("SELECT clip_path, clip_offset, start_ts FROM events WHERE id = ?", (r["ev"],)) if r["ev"] else None
+            r["clip"] = bool(e and e.get("clip_path") and (self.hub.data / e["clip_path"]).exists())
+            r["seek"] = max(0.0, e["clip_offset"] + r["first_ts"] - e["start_ts"] - 1.0) if r["clip"] else None
+            if need_clip and not r["clip"]:
+                continue
+            out.append(r)
+        return out, span
+
+    @staticmethod
+    def _visits(rows: list[dict], gap: float = 180) -> list[dict]:
+        """Collapse back-to-back sightings of the same thing on the same camera into one visit."""
+        visits: list[dict] = []
+        for r in rows:                                   # newest first
+            v = visits[-1] if visits else None
+            if v and v["camera_id"] == r["camera_id"] and v["who"] == r["who"] and v["label"] == r["label"] \
+                    and v["start"] - r["last_ts"] < gap:
+                v["start"] = r["first_ts"]
+                v["n"] += 1
+                v["clip"] = v["clip"] or r["clip"]
+                continue
+            visits.append({**r, "start": r["first_ts"], "n": 1})
+        return visits
+
+    def _describe(self, r: dict) -> str:
+        what = r["who"] + (f" ({r['label']})" if r["label"] not in ("person", "car") else "") if r.get("who") else r["label"]
+        return f"{what} on {self._cam_name(r['camera_id'])}, {_ago(r['start'] if 'start' in r else r['first_ts'])}"
+
+    def find_sightings(self, who: str | None = None, what: str | None = None, camera: str | None = None,
+                       when: str | None = None, hours: float | None = None) -> str:
+        name = self._who(who) or self._who(what)
+        label = None if name else (self._label(what) or self._label(who))
+        if (who or what) and not name and not label:
+            known = ", ".join(n for n, _ in self._names().values())
+            return f"I don't know {who or what!r}. Known names: {known}."
+        rows, span = self._sightings(name, label, camera, when, hours)
+        thing = name or (label + "s" if label else "anything")
+        scope = f" on {self._cam_name(self._cam_id(camera))}" if camera else ""
+        if not rows:
+            return f"No sightings of {thing}{scope} in {span}."
+        visits = self._visits(rows)
+        out = [f"{thing}{scope} in {span}: {len(visits)} visit(s), most recent first:"]
+        for v in visits[:8]:
+            out.append(f"- {self._describe(v)}" + (" [video]" if v["clip"] else ""))
+        out.append("To play one of these, call show_recording with the same who/what/camera/when.")
+        return "\n".join(out)
+
+    def show_recording(self, who: str | None = None, what: str | None = None, camera: str | None = None,
+                       when: str | None = None, which: str = "latest") -> str:
+        name = self._who(who) or self._who(what)
+        label = None if name else (self._label(what) or self._label(who))
+        rows, span = self._sightings(name, label, camera, when, None if when else 24 * 7, limit=200, need_clip=True)
+        thing = name or (label or "anything")
+        scope = f" on {self._cam_name(self._cam_id(camera))}" if camera else ""
+        if not rows:
+            return f"I have no recorded video of {thing}{scope} in {span}."
+        visits = [v for v in self._visits(rows) if v["clip"]]
+        pick = visits[-1] if (which or "").lower().startswith(("first", "earliest", "oldest")) else visits[0]
+        playlist = [pick] + [v for v in visits if v is not pick][:5]
+        self.last_shown = {"ts": time.time(), "ids": [v["id"] for v in playlist], "title": f"{thing}{scope}"}
+        more = len(visits) - 1
+        return (f"Playing the video of {self._describe(pick)} on the dashboard now."
+                + (f" The {min(more, 5)} visit(s) before it are lined up below it ({more} recorded in {span} in all)."
+                   if more else ""))
+
     def recent_activity(self, camera: str | None = None, label: str | None = None,
                         hours: float = 24, limit: int = 15) -> str:
+        if self._who(label):                       # "bear bear" is a name, not a detector label
+            return self.find_sightings(who=label, camera=camera, hours=hours)
+        label = self._label(label) or label
         where, args = ["first_ts > ?"], [dt.datetime.now().timestamp() - float(hours) * 3600]
         if camera:
             where.append("camera_id = ?")
@@ -254,7 +414,7 @@ class _Tools:
             args.append(label.lower())
         limit = max(1, min(int(limit), 50))
         rows = self.db.all(
-            f"SELECT camera_id, label, confidence, first_ts, plate FROM detections "
+            f"SELECT camera_id, label, confidence, first_ts, plate, who FROM detections "
             f"WHERE {' AND '.join(where)} ORDER BY first_ts DESC LIMIT ?", args + [limit])
         if not rows:
             scope = f" on {self._cam_name(self._cam_id(camera))}" if camera else ""
@@ -262,10 +422,26 @@ class _Tools:
             return f"No{what} detections{scope} in the last {hours:g}h."
         out = [f"{len(rows)} recent detection(s) in the last {hours:g}h:"]
         for r in rows:
-            line = f"- {r['label']} on {self._cam_name(r['camera_id'])}, {_ago(r['first_ts'])}"
+            who = f" ({r['who']})" if r.get("who") else ""
+            line = f"- {r['label']}{who} on {self._cam_name(r['camera_id'])}, {_ago(r['first_ts'])}"
             if r.get("plate"):
                 line += f", plate {r['plate']}"
             out.append(line)
+        # Who it was, by name, over the whole window (not just the rows above), so "has Bucko been out" can be
+        # answered from here too.
+        named = self.db.all(
+            f"SELECT who, camera_id, MAX(first_ts) AS ts, COUNT(*) AS n FROM detections "
+            f"WHERE {' AND '.join(where)} AND who IS NOT NULL GROUP BY who ORDER BY ts DESC LIMIT 10", args)
+        if named:
+            out.append("By name: " + "; ".join(f"{r['who']} last seen {_ago(r['ts'])} on {self._cam_name(r['camera_id'])}"
+                                                for r in named) + ".")
+        # Every family pet, by name, even ones not seen in this window (so two dogs are never mistaken for one).
+        if label in ("dog", "cat", None):
+            seen = {r["who"] for r in named}
+            for pet in sorted({n for n, k in self._names().values() if k == "pet"} - seen):
+                last = self.db.one("SELECT camera_id, MAX(first_ts) AS ts FROM detections WHERE who = ?", (pet,))
+                when = f"last seen {_ago(last['ts'])} on {self._cam_name(last['camera_id'])}" if last and last["ts"] else "never seen"
+                out.append(f"{pet}: NOT seen in the last {hours:g}h ({when}).")
         return "\n".join(out)
 
     def look_at_camera(self, camera: str) -> str:
@@ -379,7 +555,8 @@ TOOL_SCHEMAS = [
          "required": ["query"]}},
     {"name": "recent_activity",
      "description": "List recent object detections (people, vehicles, animals) in the last N hours, newest "
-                    "first. Use for 'what's happened lately' or 'any activity on the driveway'.",
+                    "first. Use for 'what's happened lately' or 'any activity on the driveway'. For a NAMED person, "
+                    "dog or car (Bear-Bear, Bucko, Rylan...) use find_sightings instead.",
      "inputSchema": {"type": "object", "properties": {
          "camera": {"type": "string", "description": "Optional camera name."},
          "label": {"type": "string", "description": "Optional object type, e.g. person, car, truck, dog."},
@@ -392,6 +569,30 @@ TOOL_SCHEMAS = [
      "inputSchema": {"type": "object", "properties": {
          "camera": {"type": "string", "description": "Camera name, e.g. Front Porch, Driveway, Back Yard."}},
          "required": ["camera"]}},
+    {"name": "find_sightings",
+     "description": "When and where a named person, pet or car (or a kind of thing: dog, cat, person, car, truck) "
+                    "was seen: 'when was Bear Bear last in the back yard', 'has Bucko been out today', 'when did "
+                    "Rylan's car leave'. Known names: {names}. Spoken names match loosely ('bear bear' = Bear-Bear).",
+     "inputSchema": {"type": "object", "properties": {
+         "who": {"type": "string", "description": "A known name, e.g. Bear-Bear, Buck-O, Eric, Rylan's Car."},
+         "what": {"type": "string", "description": "Or a kind of thing: dog, cat, person, car, truck."},
+         "camera": {"type": "string", "description": "The camera, whenever the user names a place: 'backyard' -> "
+                                                     "Back Yard, 'front door' -> Front Porch, 'driveway' -> Driveway."},
+         "when": {"type": "string", "description": "Optional time in words: 'today', 'this morning', 'yesterday "
+                                                   "evening', 'last night'. Default: the last 24 hours."}}}},
+    {"name": "show_recording",
+     "description": "PLAY a recorded video from the past on the dashboard: 'show me the video of Bear Bear in the "
+                    "back yard', 'show me when the delivery came this morning', 'play the last time Rylan got home'. "
+                    "Picks the most recent matching recording (or the first one with which='first'). Known names: "
+                    "{names}.",
+     "inputSchema": {"type": "object", "properties": {
+         "who": {"type": "string", "description": "A known name, e.g. Bear-Bear, Buck-O, Brandi."},
+         "what": {"type": "string", "description": "Or a kind of thing: dog, cat, person, car, truck."},
+         "camera": {"type": "string", "description": "The camera, whenever the user names a place: 'backyard' -> "
+                                                     "Back Yard, 'front door' -> Front Porch, 'driveway' -> Driveway."},
+         "when": {"type": "string", "description": "Optional time in words, e.g. 'this morning', 'yesterday', "
+                                                   "'this week'."},
+         "which": {"type": "string", "enum": ["latest", "first"], "description": "Default latest."}}}},
     {"name": "show_cameras",
      "description": "Show SEVERAL cameras at once on the dashboard, side by side, and say who and what is on each "
                     "right now. Use when the user asks for more than one camera, e.g. 'show me the driveway and the "
@@ -426,7 +627,12 @@ def _dispatch(tools: _Tools, body: dict) -> dict | None:
     if method == "notifications/initialized" or rid is None:
         return None  # notification: no reply
     if method == "tools/list":
-        return {"jsonrpc": "2.0", "id": rid, "result": {"tools": TOOL_SCHEMAS}}
+        try:
+            names = ", ".join(f"{n} ({'dog/pet' if k == 'pet' else k})" for n, k in tools._names().values()) or "none yet"
+        except Exception:  # noqa: BLE001
+            names = "see find_sightings"
+        schemas = json.loads(json.dumps(TOOL_SCHEMAS).replace("{names}", names.replace('"', "'")))
+        return {"jsonrpc": "2.0", "id": rid, "result": {"tools": schemas}}
     if method == "tools/call":
         params = body.get("params") or {}
         name = params.get("name")
@@ -477,6 +683,11 @@ def _handler_factory(tools: _Tools, token_ok: Callable[[str | None], bool]):
                     cams = sorted(hub.cams.values(), key=lambda c: order.get(c.id, len(order)))
                     return self._send(200, {"cameras": [{"id": c.id, "name": c.cfg.name or c.id,
                                                          "live": bool(c.latest_jpeg)} for c in cams]})
+                if parts == ["recordings", "last.json"]:
+                    ls = tools.last_shown
+                    return self._send(200, {"ts": ls["ts"], "ids": ls["ids"], "title": ls["title"]})
+                if len(parts) == 2 and parts[0] == "recording" and parts[1].split(".")[0].isdigit():
+                    return self._recording(int(parts[1].split(".")[0]), parts[1].rsplit(".", 1)[-1])
                 if len(parts) == 3 and parts[0] == "cam":
                     cid = tools._cam_id(parts[1])
                     cam = hub.cams.get(cid)
@@ -501,6 +712,63 @@ def _handler_factory(tools: _Tools, token_ok: Callable[[str | None], bool]):
                 log.warning("GET %s failed: %s", self.path, e)
                 return self._send(500, {"error": str(e)})
             return self._send(404, {"error": "not found"})
+
+        def _recording(self, det_id: int, ext: str):
+            d = tools.db.one("SELECT id, camera_id, label, who, first_ts, last_ts, COALESCE(event_id, (SELECT l.event_id "
+                             "FROM event_links l WHERE l.kind='detection' AND l.ref_id=detections.id LIMIT 1)) AS ev "
+                             "FROM detections WHERE id = ?", (det_id,))
+            e = tools.db.one("SELECT clip_path, clip_offset, start_ts, end_ts FROM events WHERE id = ?", (d["ev"],)) \
+                if d and d.get("ev") else None
+            data = tools.hub.data.resolve()
+            path = (data / e["clip_path"]).resolve() if e and e.get("clip_path") else None
+            if not path or data not in path.parents or not path.is_file():
+                return self._send(404, {"error": "no recording"})
+            if ext == "json":
+                return self._send(200, {
+                    "id": d["id"], "camera": tools._cam_name(d["camera_id"]), "camera_id": d["camera_id"],
+                    "label": d["label"], "who": d["who"], "ts": d["first_ts"], "ago": _ago(d["first_ts"]),
+                    "seek": max(0.0, e["clip_offset"] + d["first_ts"] - e["start_ts"] - 1.0),
+                    "duration": (e["end_ts"] or d["last_ts"]) - e["start_ts"] + e["clip_offset"] if e.get("end_ts") else None})
+            if ext != "mp4":
+                return self._send(404, {"error": "not found"})
+            size = path.stat().st_size
+            start, end = 0, size - 1
+            rng = self.headers.get("Range")
+            m = re.match(r"bytes=(\d*)-(\d*)", rng or "")
+            if m and (m.group(1) or m.group(2)):          # browsers (iOS especially) stream video in byte ranges
+                if m.group(1):
+                    start = int(m.group(1))
+                    end = min(int(m.group(2)), size - 1) if m.group(2) else size - 1
+                else:
+                    start = max(0, size - int(m.group(2)))
+                if start > end or start >= size:
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{size}")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return None
+                self.send_response(206)
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            else:
+                self.send_response(200)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", str(end - start + 1))
+            self.send_header("Cache-Control", "private, max-age=3600")
+            self.end_headers()
+            with open(path, "rb") as f:
+                f.seek(start)
+                left = end - start + 1
+                while left > 0:
+                    chunk = f.read(min(256 * 1024, left))
+                    if not chunk:
+                        break
+                    try:
+                        self.wfile.write(chunk)
+                    except (BrokenPipeError, ConnectionResetError):
+                        break
+                    left -= len(chunk)
+            return None
 
         def do_POST(self):
             if not token_ok(self.headers.get("Authorization")):
