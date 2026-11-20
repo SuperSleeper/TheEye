@@ -14,6 +14,8 @@ import logging
 import threading
 import re
 import time
+
+import numpy as np
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
@@ -138,6 +140,45 @@ class _Vision:
         dx, dy = (x2 - x1) * INSET, (y2 - y1) * INSET
         crop = img[int(y1 + dy):int(y2 - dy), int(x1 + dx):int(x2 - dx)]
         return emb.image(crop) if crop.size else None
+
+    def identify(self, img, min_px: int = 32) -> list[dict]:
+        """Every face in a picture, named with TheEye's People matcher (read-only). For pictures from elsewhere,
+        e.g. Vector the robot's camera: [{name, maybe, score, size, box}] biggest face first."""
+        people = getattr(self.hub, "people", None)
+        if people is None or img is None:
+            return []
+        from .faces import MATCH, SUGGEST
+        eng = people.engine
+        out = []
+        with eng._lock:
+            if not eng._load():
+                return []
+            h, w = img.shape[:2]
+            eng._det.setInputSize((w, h))
+            _, found = eng._det.detect(img)
+            feats = []
+            for f in (found if found is not None else []):
+                size = int(min(f[2], f[3]))
+                if size < min_px:
+                    continue
+                aligned = eng._rec.alignCrop(img, f)
+                feat = eng._rec.feature(aligned).flatten().astype(np.float32)
+                feats.append((feat / (np.linalg.norm(feat) or 1.0), size, [round(float(v), 1) for v in f[:4]]))
+        from .faces import similarity
+        names = people.names()
+        with people._lock:
+            refs = dict(people._refs)
+        for feat, size, box in sorted(feats, key=lambda x: -x[1]):
+            ranked = sorted(((similarity(feat, r), pid) for pid, r in refs.items()), reverse=True)
+            score, pid = ranked[0] if ranked else (0.0, None)
+            lead = score - (ranked[1][0] if len(ranked) > 1 else 0.0)
+            name = names.get(pid) if pid is not None else None
+            # A "maybe" must also stand out from the next person: small, backlit faces from below score everyone
+            # about the same (seen from Vector's camera: 0.31 / 0.30 / 0.30), and that is noise, not a guess.
+            out.append({"name": name if score >= MATCH and lead >= 0.03 else None,
+                        "maybe": name if SUGGEST <= score < MATCH and lead >= 0.05 else None,
+                        "score": round(float(score), 2), "lead": round(float(lead), 2), "size": size, "box": box})
+        return out
 
     def look(self, cam_id: str) -> dict:
         """{camera, ts, objects: [{key, label, bbox, parked, name, why}], recent: [...]}"""
@@ -828,7 +869,25 @@ def _handler_factory(tools: _Tools, token_ok: Callable[[str | None], bool]):
                     left -= len(chunk)
             return None
 
+        def _identify(self):
+            import cv2
+            n = int(self.headers.get("Content-Length") or 0)
+            if not 0 < n <= 8_000_000:
+                return self._send(400, {"error": "send a JPEG body"})
+            img = cv2.imdecode(np.frombuffer(self.rfile.read(n), np.uint8), cv2.IMREAD_COLOR)
+            if img is None:
+                return self._send(400, {"error": "couldn't read that image"})
+            return self._send(200, {"faces": tools.vision.identify(img), "size": [img.shape[1], img.shape[0]]})
+
         def do_POST(self):
+            if self.path.split("?")[0].rstrip("/") == "/identify":
+                if not token_ok(self.headers.get("Authorization")):
+                    return self._send(401, {"error": "unauthorized"})
+                try:
+                    return self._identify()
+                except Exception as e:  # noqa: BLE001
+                    log.warning("identify failed: %s", e)
+                    return self._send(500, {"error": str(e)})
             if not token_ok(self.headers.get("Authorization")):
                 return self._send(401, {"jsonrpc": "2.0", "id": None,
                                         "error": {"code": -32001, "message": "unauthorized"}})
