@@ -41,14 +41,12 @@ def local_names() -> tuple[set[str], set[str]]:
     return names, ips
 
 
-def _covers(cert: x509.Certificate, names: set[str], ips: set[str]) -> bool:
+def _san(cert: x509.Certificate) -> tuple[set[str], set[str]]:
     try:
         san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
     except x509.ExtensionNotFound:
-        return False
-    have_n = set(san.get_values_for_type(x509.DNSName))
-    have_i = {str(i) for i in san.get_values_for_type(x509.IPAddress)}
-    return names <= have_n and ips <= have_i
+        return set(), set()
+    return set(san.get_values_for_type(x509.DNSName)), {str(i) for i in san.get_values_for_type(x509.IPAddress)}
 
 
 def ensure_cert(folder: Path) -> tuple[Path, Path]:
@@ -62,8 +60,13 @@ def ensure_cert(folder: Path) -> tuple[Path, Path]:
             cert = x509.load_pem_x509_certificate(cert_p.read_bytes())
             end = getattr(cert, "not_valid_after_utc", None) or cert.not_valid_after.replace(tzinfo=dt.timezone.utc)
             left = end - dt.datetime.now(dt.timezone.utc)
-            if left > dt.timedelta(days=RENEW_DAYS) and _covers(cert, names, ips):
+            have_n, have_i = _san(cert)
+            if left > dt.timedelta(days=RENEW_DAYS) and names <= have_n and ips <= have_i:
                 return cert_p, key_p
+            # keep the old names/addresses: at boot the network may not be up yet, and dropping the LAN
+            # address would break (and re-warn) every browser that reaches TheEye by it
+            names |= have_n
+            ips |= have_i
             log.info("renewing HTTPS certificate (%s)", "expiring" if left <= dt.timedelta(days=RENEW_DAYS)
                      else "this machine's names/addresses changed")
         except ValueError:
