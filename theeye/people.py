@@ -26,6 +26,36 @@ SCAN_FRAMES = 6               # moments per person track decoded from the clip w
 ENROL_FRAMES = 10             # ...and when you mark someone yourself: worth looking harder
 
 
+
+class Rerunner:
+    """Runs `fn` in a background thread. Asked again while it runs, it runs once more afterwards: never two at a
+    time (a burst of answers would otherwise start a re-match each), and never misses the latest change."""
+
+    def __init__(self, fn, name: str):
+        self.fn, self.name = fn, name
+        self._lock = threading.Lock()
+        self._running = self._again = False
+
+    def __call__(self) -> None:
+        with self._lock:
+            if self._running:
+                self._again = True
+                return
+            self._running = True
+        threading.Thread(target=self._loop, name=self.name, daemon=True).start()
+
+    def _loop(self) -> None:
+        while True:
+            try:
+                self.fn()
+            except Exception:
+                log.exception("%s failed", self.name)
+            with self._lock:
+                if not self._again:
+                    self._running = False
+                    return
+                self._again = False
+
 class People:
     def __init__(self, hub, models_dir: Path):
         self.hub, self.db = hub, hub.db
@@ -92,23 +122,32 @@ class People:
         return best, best_s
 
     def _match(self, row) -> None:
-        """Tag (or untag) one unconfirmed face with the person it matches."""
+        """Tag (or untag) one unconfirmed face with the person it matches. `row` may be a moment old (rematch_all
+        reads them all first), so each write only lands if the face is still as it was read: a face confirmed or
+        rejected in the meantime keeps your answer."""
         if row is None or row["status"] in ("confirmed", "rejected"):
             return
         feat = np.frombuffer(row["embedding"], dtype=np.float32)
         pid, s = self._best_person(feat, set(jload(row["rejected"], [])))
+        same = " WHERE id=? AND status=? AND person_id IS ? AND rejected IS ?"
+        was = (row["id"], row["status"], row["person_id"], row["rejected"])
         if pid is not None and s >= MATCH:
-            self.db.execute("UPDATE faces SET person_id=?, status='auto', score=? WHERE id=?", (pid, s, row["id"]))
-            self._set_who(row["detection_id"], self._names.get(pid))
+            if self.db.execute("UPDATE faces SET person_id=?, status='auto', score=?" + same, (pid, s, *was)).rowcount:
+                self._set_who(row["detection_id"], self._names.get(pid))
         elif row["status"] == "auto":
-            self.db.execute("UPDATE faces SET person_id=NULL, status='unknown', score=? WHERE id=?", (s, row["id"]))
-            self._set_who(row["detection_id"], None, old=self._names.get(row["person_id"]))
+            if self.db.execute("UPDATE faces SET person_id=NULL, status='unknown', score=?" + same, (s, *was)).rowcount:
+                self._set_who(row["detection_id"], None, old=self._names.get(row["person_id"]))
         else:
-            self.db.execute("UPDATE faces SET score=? WHERE id=?", (s, row["id"]))
+            self.db.execute("UPDATE faces SET score=?" + same, (s, *was))
 
     def rematch_all(self) -> None:
         for row in self.db.all("SELECT * FROM faces WHERE status IN ('unknown','auto')"):
             self._match(row)
+
+    def _rematch_soon(self) -> None:
+        if not hasattr(self, "_rematcher"):
+            self._rematcher = Rerunner(self.rematch_all, "faces-rematch")
+        self._rematcher()
 
     def confirm(self, face_id: int, pid: int) -> None:
         row = self.db.one("SELECT * FROM faces WHERE id=?", (face_id,))
@@ -118,7 +157,7 @@ class People:
         self.db.execute("UPDATE faces SET person_id=?, status='confirmed' WHERE id=?", (pid, face_id))
         self._set_who(row["detection_id"], self._names[pid], old=old)
         self.reload()
-        threading.Thread(target=self.rematch_all, name="faces-rematch", daemon=True).start()
+        self._rematch_soon()
 
     def reject(self, face_id: int, pid: int) -> None:
         row = self.db.one("SELECT * FROM faces WHERE id=?", (face_id,))
@@ -127,7 +166,7 @@ class People:
         if row["detection_id"] is None:          # an uploaded photo: "not them" just removes it
             drop_upload(self.hub, "faces", "people", row)
             self.reload()
-            threading.Thread(target=self.rematch_all, name="faces-rematch", daemon=True).start()
+            self._rematch_soon()
             return
         rejected = sorted(set(jload(row["rejected"], [])) | {pid})
         was = row["person_id"] == pid
@@ -137,7 +176,7 @@ class People:
         if was:
             self._set_who(row["detection_id"], None, old=self._names.get(pid))
             self.reload()
-            threading.Thread(target=self.rematch_all, name="faces-rematch", daemon=True).start()
+            self._rematch_soon()
         self._match(self.db.one("SELECT * FROM faces WHERE id=?", (face_id,)))
 
     def unmark_detection(self, det_id: int) -> int:
@@ -168,7 +207,7 @@ class People:
                              " VALUES(NULL,'upload',?,?,?,?,?,'confirmed')",
                              (time.time(), size, feat.tobytes(), rel, pid))
         self.reload()
-        threading.Thread(target=self.rematch_all, name="faces-rematch", daemon=True).start()
+        self._rematch_soon()
         return fid
 
     def enrol_detection(self, det_id: int, pid: int) -> Optional[int]:

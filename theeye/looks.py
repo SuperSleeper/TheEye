@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 
 from .db import jload
-from .people import drop_upload, save_upload, set_who
+from .people import Rerunner, drop_upload, save_upload, set_who
 
 log = logging.getLogger("theeye.looks")
 
@@ -127,28 +127,34 @@ class NamedLooks:
         return (pid if pid is not None and s >= self.MATCH and s - runner_up >= self.MARGIN else None), s
 
     def _match(self, row) -> None:
-        """Tag (or untag) one unconfirmed look with the one it matches."""
+        """Tag (or untag) one unconfirmed look with the one it matches. `row` may be a moment old (rematch_all
+        reads them all first), so each write only lands if the look is still as it was read: one confirmed or
+        rejected in the meantime keeps your answer."""
         if row is None or row["status"] in ("confirmed", "rejected"):
             return
         pid, s = self._pick(row, np.frombuffer(row["embedding"], dtype=np.float32))
+        same = f" WHERE id=? AND status=? AND {self.OWNER} IS ? AND rejected IS ?"
+        was = (row["id"], row["status"], row["owner"], row["rejected"])
         if pid is not None:
             old = self._names.get(row["owner"]) if row["owner"] != pid else None
-            self.db.execute(f"UPDATE {self.LOOKS} SET {self.OWNER}=?, status='auto', score=? WHERE id=?",
-                            (pid, s, row["id"]))
-            set_who(self.hub, row["detection_id"], self._names.get(pid), old=old)
+            if self.db.execute(f"UPDATE {self.LOOKS} SET {self.OWNER}=?, status='auto', score=?" + same,
+                               (pid, s, *was)).rowcount:
+                set_who(self.hub, row["detection_id"], self._names.get(pid), old=old)
         elif row["status"] == "auto":
-            self.db.execute(f"UPDATE {self.LOOKS} SET {self.OWNER}=NULL, status='unknown', score=? WHERE id=?",
-                            (s, row["id"]))
-            set_who(self.hub, row["detection_id"], None, old=self._names.get(row["owner"]))
+            if self.db.execute(f"UPDATE {self.LOOKS} SET {self.OWNER}=NULL, status='unknown', score=?" + same,
+                               (s, *was)).rowcount:
+                set_who(self.hub, row["detection_id"], None, old=self._names.get(row["owner"]))
         else:
-            self.db.execute(f"UPDATE {self.LOOKS} SET score=? WHERE id=?", (s, row["id"]))
+            self.db.execute(f"UPDATE {self.LOOKS} SET score=?" + same, (s, *was))
 
     def rematch_all(self) -> None:
         for row in self.db.all(f"SELECT *, {self.OWNER} AS owner FROM {self.LOOKS} WHERE status IN ('unknown','auto')"):
             self._match(row)
 
     def _rematch_soon(self) -> None:
-        threading.Thread(target=self.rematch_all, name=f"{self.PREFIX}-rematch", daemon=True).start()
+        if not hasattr(self, "_rematcher"):
+            self._rematcher = Rerunner(self.rematch_all, f"{self.PREFIX}-rematch")
+        self._rematcher()
 
     def confirm(self, look_id: int, pid: int) -> None:
         row = self._row(look_id)
