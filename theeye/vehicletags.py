@@ -27,6 +27,13 @@ NONE = "none"           # "not a delivery or service vehicle"
 MATCH = 0.82            # similarity to an example needed to take its tag
 MARGIN = 0.02           # ...and this much closer to it than to an example with any other tag
 MIN_SIDE = 0.07         # same as theeye.delivery: smaller boxes don't show what the vehicle is
+# Detector labels a tag can coincide with: a "Bus" tag IS the detector's "bus", one classification, spelt its way.
+DETECTOR_WORDS = set(VEHICLE_LABELS) | {"motorcycle", "bicycle"}
+
+
+def canon(tag: str) -> str:
+    t = tag.strip()
+    return t.lower() if t.lower() in DETECTOR_WORDS else t
 
 
 class VehicleTags:
@@ -34,16 +41,43 @@ class VehicleTags:
         self.hub, self.db = hub, hub.db
         self._lock = threading.Lock()
         self._ex: tuple[list[str], Optional[np.ndarray], list[int]] = ([], None, [])
+        self._unify()
         self.reload()
+
+    def _unify(self) -> None:
+        """Tags once stored as "Bus" become the detector's "bus": in examples, sightings and recordings."""
+        import json
+        words = sorted(DETECTOR_WORDS)
+        q = ",".join("?" * len(words))
+        old = {r["t"] for r in self.db.all(f"SELECT DISTINCT tag AS t FROM vehicle_marks WHERE LOWER(tag) IN ({q})", words)}
+        old |= {r["t"] for r in self.db.all(f"SELECT DISTINCT subtype AS t FROM detections WHERE LOWER(subtype) IN ({q})",
+                                            words)}
+        for k in sorted(old):
+            c = canon(k)
+            if c == k:
+                continue
+            self.db.execute("UPDATE vehicle_marks SET tag=? WHERE tag=?", (c, k))
+            self.db.execute("UPDATE detections SET subtype=? WHERE subtype=?", (c, k))
+            n = 0
+            for e in self.db.all("SELECT id, labels FROM events WHERE labels LIKE ?", (f'%"{k}"%',)):
+                labels = jload(e["labels"], [])
+                if k in labels:
+                    self.db.execute("UPDATE events SET labels=? WHERE id=?",
+                                    (json.dumps(sorted({c if x == k else x for x in labels})), e["id"]))
+                    n += 1
+            log.info("vehicle tags: %r is the detector's %r now (%d recordings)", k, c, n)
 
     def kinds(self) -> list[str]:
         """Tags you can give a vehicle: the services, then your own (delivery.vehicle_kinds, e.g. Short Bus)."""
-        own = [k.strip() for k in self.hub.cfg.delivery.vehicle_kinds if k.strip()]
+        own = [canon(k) for k in self.hub.cfg.delivery.vehicle_kinds if k.strip()]
         return list(dict.fromkeys(list(SERVICES) + own))
 
     def parent(self, tag: Optional[str]) -> Optional[str]:
         """The broader tag this one is a kind of (Short Bus -> Bus: every short bus is a bus), or None."""
-        return self.hub.cfg.delivery.vehicle_parents.get(tag) if tag else None
+        if not tag:
+            return None
+        parents = {canon(k): canon(v) for k, v in self.hub.cfg.delivery.vehicle_parents.items()}
+        return parents.get(tag)
 
     def with_parents(self, tag: Optional[str]) -> list[str]:
         """The tag and every broader tag it's a kind of: Short Bus -> [Short Bus, Bus]."""

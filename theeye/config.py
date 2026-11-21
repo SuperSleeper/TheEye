@@ -245,9 +245,10 @@ class DeliveryConfig(BaseModel):
     enabled: bool = True
     min_confidence: float = Field(0.95, ge=0.5, le=0.999)   # tested on 2 days of footage: 13/13 right at 0.95
     # Your own vehicle tags, learned only from vehicles you tag in the player (theeye.vehicletags).
-    vehicle_kinds: list[str] = Field(default_factory=lambda: ["Short Bus", "Bus"])
-    # Tag -> the broader tag it's a kind of: a Short Bus is also a Bus (tagged, labelled and searched as one).
-    vehicle_parents: dict[str, str] = Field(default_factory=lambda: {"Short Bus": "Bus"})
+    vehicle_kinds: list[str] = Field(default_factory=lambda: ["Short Bus", "bus"])
+    # Tag -> the broader tag it's a kind of: a Short Bus is also a bus (tagged, labelled and searched as one).
+    # A tag spelt like a detector label ("Bus") is that label: one classification.
+    vehicle_parents: dict[str, str] = Field(default_factory=lambda: {"Short Bus": "bus"})
 
 
 class ExhaustConfig(BaseModel):
