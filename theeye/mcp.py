@@ -57,6 +57,220 @@ def _canon(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
 
 
+class _Webcam:
+    """A local USB webcam the assistant can look through on demand. It is not a TheEye camera: nothing is recorded
+    or detected. The device is opened on the first request and released after IDLE_S without one, so the webcam
+    stays free for video calls the rest of the time."""
+
+    IDLE_S = 15.0
+    WARMUP_FRAMES = 10            # the first frames after opening are dark while auto-exposure settles
+
+    FULL_HOLD_S = 5.0             # after the last full-size use (a viewer, a snapshot, a look) stay at full size this long
+    MAX_BAD_PACKETS = 30          # corrupt MJPEG frames in a row before giving up on the stream
+
+    def __init__(self, cid: str, name: str, device: str, size: str, gesture_size: str = "1280x720",
+                 gesture_fps: int = 30, gesture_exposure: int = 0) -> None:
+        self.id, self.name, self.device, self.size = cid, name, device, size
+        self.gesture_size, self.gesture_fps, self.gesture_exposure = gesture_size, gesture_fps, gesture_exposure
+        self.frame = None             # latest BGR frame
+        self.ts = 0.0
+        self.error: str | None = None
+        self._jpeg: tuple[float, bytes] | None = None
+        self._last_use = 0.0
+        self._last_full = 0.0         # when something last needed the full-size picture
+        self._open_mode: tuple[str, int] | None = None
+        self._thread: threading.Thread | None = None
+        self._cond = threading.Condition()
+
+    def _want_mode(self) -> tuple[str, int]:
+        if time.time() - self._last_full < self.FULL_HOLD_S:
+            return self.size, 15
+        return self.gesture_size, self.gesture_fps
+
+    def _set_controls(self, gesture: bool) -> None:
+        """Hold the frame rate in dim light (no auto-slowdown to lengthen exposure: that blurs a moving hand). In
+        gesture mode also a short manual exposure, so a swiping hand stays sharp; full size goes back to auto."""
+        import subprocess
+        ctl = ["exposure_dynamic_framerate=0"]
+        if gesture and self.gesture_exposure:
+            ctl += ["auto_exposure=1", f"exposure_time_absolute={self.gesture_exposure}", "gain=255"]
+        else:
+            ctl += ["auto_exposure=3"]
+        try:
+            for c in ctl:                              # one at a time: the C920 rejects exposure_time in auto mode
+                subprocess.run(["v4l2-ctl", "-d", self.device, "-c", c], timeout=3, capture_output=True)
+        except Exception:  # noqa: BLE001 - v4l2-ctl missing: keep the camera's own settings
+            pass
+
+    def _run(self) -> None:
+        import av
+        size, fps = mode = self._want_mode()
+        try:
+            c = av.open(self.device, format="v4l2", timeout=(5.0, 5.0),
+                        options={"input_format": "mjpeg", "video_size": size, "framerate": str(fps)})
+        except Exception as e:  # noqa: BLE001 - busy (a video call) or unplugged
+            with self._cond:
+                self.error, self._thread = f"the webcam couldn't be opened ({e})", None
+                self._cond.notify_all()
+            log.info("webcam %s: open failed: %s", self.device, e)
+            return
+        self._open_mode = mode
+        log.info("webcam %s opened at %s/%dfps", self.device, size, fps)
+        n = bad = 0
+        try:
+            stream = c.streams.video[0]
+            for pkt in c.demux(stream):
+                if pkt.size == 0:
+                    continue
+                try:
+                    frames = pkt.decode()
+                except av.error.FFmpegError:
+                    bad += 1                              # a corrupt MJPEG frame (USB hiccup): skip it
+                    if bad >= self.MAX_BAD_PACKETS:
+                        raise
+                    continue
+                bad = 0
+                for frame in frames:
+                    n += 1
+                    if n == 2:                            # the webcam resets exposure on stream start: set after it
+                        self._set_controls(gesture=(mode != (self.size, 15)))
+                    if n <= self.WARMUP_FRAMES:
+                        continue
+                    with self._cond:
+                        self.frame, self.ts, self.error = frame.to_ndarray(format="bgr24"), time.time(), None
+                        self._cond.notify_all()
+                        if time.time() - self._last_use > self.IDLE_S:
+                            raise StopIteration
+                        if self._want_mode() != mode:
+                            log.info("webcam %s: switching to %s", self.device, self._want_mode()[0])
+                            raise StopIteration
+        except StopIteration:
+            pass
+        except Exception as e:  # noqa: BLE001
+            log.info("webcam %s: stream ended: %s", self.device, e)
+        finally:
+            c.close()
+            with self._cond:
+                self._thread, self.frame, self._open_mode = None, None, None
+                self._cond.notify_all()
+            log.info("webcam %s released", self.device)
+
+    def grab(self, wait: float = 6.0, full: bool = True):
+        """The current frame (BGR), opening the webcam if needed. None if it can't be opened (self.error says why).
+        full: the caller needs the full-size picture (a viewer, a look); the gesture stream passes False, and while
+        only it reads, the webcam runs small and fast. A full-size request reopens it at full size (~1 s)."""
+        with self._cond:
+            now = time.time()
+            self._last_use = now
+            if full:
+                self._last_full = now
+            # wrong size open (a viewer arrived while the gestures had it small): wait for it to reopen
+            if self._thread is not None and self._open_mode is not None and self._open_mode != self._want_mode():
+                end = now + 3.0
+                while self._thread is not None and time.time() < end:
+                    self._cond.wait(end - time.time())
+            if self._thread is None:
+                self.error, self.frame = None, None
+                self._thread = threading.Thread(target=self._run, name=f"webcam-{self.id}", daemon=True)
+                self._thread.start()
+            end = time.time() + wait
+            while (self.frame is None or time.time() - self.ts > 2.0) and self.error is None and time.time() < end:
+                self._cond.wait(end - time.time())
+            return self.frame if self.error is None else None
+
+    LIVE_MIME = 'video/mp4; codecs="avc1.42E01F"'      # H.264 Constrained Baseline, level 3.1 (720p30)
+    LIVE_GOP = 10                                      # keyframe (= new MP4 fragment) every ~0.7 s: low delay
+
+    def live(self, write: Callable[[bytes], None]) -> None:
+        """Smooth live video for the dashboard: webcam frames encoded to H.264 (CPU, x264 ultrafast) as an endless
+        fragmented MP4 -- what TheEye's own cameras give the dashboard's player. Keeps the webcam open while it plays;
+        returns when write() fails (the viewer left) or the webcam can't be opened."""
+        import io
+        from fractions import Fraction
+        import av
+
+        chunks: list[bytes] = []
+
+        class _Sink(io.RawIOBase):
+            def writable(self):
+                return True
+
+            def write(self, b):
+                chunks.append(bytes(b))
+                return len(b)
+
+        img = self.grab()
+        if img is None:
+            raise RuntimeError(self.error or "no frame")
+        h, w = img.shape[:2]
+        out = av.open(_Sink(), mode="w", format="mp4",
+                      options={"movflags": "frag_keyframe+empty_moov+default_base_moof"})
+        st = out.add_stream("libx264", rate=15)
+        st.width, st.height, st.pix_fmt = w, h, "yuv420p"
+        st.codec_context.time_base = Fraction(1, 90000)
+        st.options = {"preset": "ultrafast", "tune": "zerolatency", "profile": "baseline", "level": "3.1",
+                      "g": str(self.LIVE_GOP), "keyint_min": str(self.LIVE_GOP), "crf": "26"}
+        t0, last_ts, last_pts = None, 0.0, -1
+        try:
+            while True:
+                with self._cond:
+                    self._last_use = self._last_full = time.time()
+                    if self._thread is None:              # released (idle elsewhere) or failed: reopen
+                        self._cond.release()
+                        try:
+                            if self.grab() is None:
+                                break
+                        finally:
+                            self._cond.acquire()
+                    end = time.time() + 2.0
+                    while self.ts == last_ts and self.error is None and time.time() < end:
+                        self._cond.wait(end - time.time())
+                    if self.error is not None or self.frame is None or self.ts == last_ts:
+                        break
+                    img, last_ts = self.frame, self.ts
+                t0 = last_ts if t0 is None else t0
+                fr = av.VideoFrame.from_ndarray(img, format="bgr24")
+                fr.pts = max(int((last_ts - t0) * 90000), last_pts + 1)
+                fr.time_base = Fraction(1, 90000)
+                last_pts = fr.pts
+                for pkt in st.encode(fr):
+                    out.mux(pkt)
+                if chunks:
+                    data = b"".join(chunks)
+                    chunks.clear()
+                    write(data)
+        finally:
+            try:
+                out.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def next_frame(self, after_ts: float, timeout: float = 2.0, full: bool = True):
+        """The first frame newer than after_ts as (img, ts), keeping the webcam open; (None, after_ts) if none came."""
+        if self.grab(full=full) is None:
+            return None, after_ts
+        with self._cond:
+            self._last_use = time.time()
+            end = time.time() + timeout
+            while self.ts <= after_ts and self.error is None and self._thread is not None and time.time() < end:
+                self._cond.wait(end - time.time())
+            if self.frame is None or self.ts <= after_ts:
+                return None, after_ts
+            return self.frame, self.ts
+
+    def jpeg(self) -> bytes | None:
+        import cv2
+        img = self.grab()
+        if img is None:
+            return None
+        if self._jpeg is None or self._jpeg[0] != self.ts:
+            ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            if not ok:
+                return None
+            self._jpeg = (self.ts, buf.tobytes())
+        return self._jpeg[1]
+
+
 class _Vision:
     """Who and what is on a camera *right now*, named with TheEye's own People and Cars matchers.
 
@@ -250,6 +464,8 @@ class _Tools:
         self.searcher = searcher
         self.db = db
         self.vision = _Vision(hub)
+        srv = getattr(getattr(hub, "cfg", None), "server", None)
+        self.webcams = {w.id: _Webcam(w.id, w.name, w.device, w.size, w.gesture_size, w.gesture_fps, w.gesture_exposure) for w in (getattr(srv, "mcp_webcams", None) or [])}
         self.last_shown: dict = {"ts": 0.0, "ids": [], "title": ""}
         self.last_query: dict = {"ts": 0.0}
 
@@ -257,7 +473,7 @@ class _Tools:
     def _cam_id(self, cam: str | None) -> str | None:
         if not cam:
             return None
-        names = self.searcher.cameras  # {id: name}
+        names = self._all_names()  # {id: name}
         if cam in names:
             return cam
         for cid, name in names.items():
@@ -279,15 +495,36 @@ class _Tools:
             return by_key[close[0]]
         return cam  # unknown: let the query return nothing rather than guess
 
+    def _all_names(self) -> dict:
+        return {**self.searcher.cameras, **{w.id: w.name for w in self.webcams.values()}}
+
     def _cam_name(self, cid: str | None) -> str:
-        return self.searcher.cameras.get(cid, cid or "?")
+        return self._all_names().get(cid, cid or "?")
+
+    def webcam_look(self, cid: str) -> dict:
+        """look() for a webcam: the faces in its current frame, named by People. Same shape as _Vision.look."""
+        w = self.webcams[cid]
+        img = w.grab()
+        objects = []
+        if img is not None:
+            h, wd = img.shape[:2]
+            for f in self.vision.identify(img, min_px=40):
+                x, y, bw, bh = f["box"]
+                why = f"face match {f['score']:.2f}" if f["name"] or f["maybe"] else "face doesn't match anyone I know"
+                objects.append({"key": None, "label": "person", "bbox": [x / wd, y / h, (x + bw) / wd, (y + bh) / h],
+                                "parked": False, "name": f["name"], "maybe": f["maybe"], "why": why})
+        return {"camera": cid, "ts": w.ts or time.time(), "objects": objects, "recent": [], "error": w.error}
 
     # ---- tool implementations ------------------------------------------------
     def list_cameras(self) -> str:
         names = self.searcher.cameras
         if not names:
             return "No cameras are configured."
-        return "Cameras TheEye watches:\n" + "\n".join(f"- {n}" for n in names.values())
+        out = "Cameras TheEye watches:\n" + "\n".join(f"- {n}" for n in names.values())
+        if self.webcams:
+            out += "\nWebcams I can look through on request (live only, nothing recorded):\n" + \
+                "\n".join(f"- {w.name}" for w in self.webcams.values())
+        return out
 
     def search_history(self, query: str, camera: str | None = None) -> str:
         if not query or not query.strip():
@@ -550,8 +787,10 @@ class _Tools:
 
     def look_at_camera(self, camera: str) -> str:
         cid = self._cam_id(camera)
+        if cid in self.webcams:
+            return self._look_webcam(cid)
         if cid not in self.hub.cams:
-            return f"There's no camera called {camera!r}. Cameras: " + ", ".join(self.searcher.cameras.values())
+            return f"There's no camera called {camera!r}. Cameras: " + ", ".join(self._all_names().values())
         name = self._cam_name(cid)
         res = self.vision.look(cid)
         people = [o for o in res["objects"] if o["label"] == "person"]
@@ -580,13 +819,30 @@ class _Tools:
             out.append("Recently seen here: " + ", ".join(f"{r['who']} {_ago(r['ts'])}" for r in seen))
         return "\n".join(out)
 
+    def _look_webcam(self, cid: str) -> str:
+        res = self.webcam_look(cid)
+        name = self._cam_name(cid)
+        if res["error"]:
+            return f"I couldn't open the {name} webcam: {res['error']}. It may be in use by a video call."
+        out = [f"{name} webcam, right now (it is now on the dashboard). It only sees faces, not cars or animals:"]
+        if not res["objects"]:
+            out.append("- No face in view.")
+        for o in res["objects"]:
+            if o["name"]:
+                out.append(f"- {o['name']} (recognised, {o['why']})")
+            elif o.get("maybe"):
+                out.append(f"- Someone who might be {o['maybe']}, but I'm not sure ({o['why']}).")
+            else:
+                out.append(f"- A person I can't identify ({o['why']}).")
+        return "\n".join(out)
+
     def show_cameras(self, cameras: Any = None) -> str:
         if isinstance(cameras, str):                 # small models sometimes send "Driveway, Front Porch"
             import re
             cameras = [c for c in re.split(r"\s*(?:,|\band\b|&)\s*", cameras) if c.strip()]
         cameras = [str(c).strip() for c in (cameras or []) if str(c).strip()]
         if not cameras:
-            return "Which cameras? Cameras: " + ", ".join(self.searcher.cameras.values())
+            return "Which cameras? Cameras: " + ", ".join(self._all_names().values())
         parts = [self.look_at_camera(c) for c in cameras[:6]]
         return "\n\n".join(p.replace(" (it is now on the dashboard)", "") for p in parts) + \
             "\n(All of these cameras are now on the dashboard, side by side.)"
@@ -696,7 +952,7 @@ TOOL_SCHEMAS = [
      "description": "Look at one camera RIGHT NOW: who is there (named if TheEye recognises their face), which "
                     "vehicles are in view and whose they are. Also puts that camera on the dashboard. Use for "
                     "'who's at the front door', 'is anyone in the back yard', 'show me the driveway'. The front "
-                    "door is the 'Front Porch' camera.",
+                    "door is the 'Front Porch' camera. The desk webcam in the office is the 'Office' camera (faces only).",
      "inputSchema": {"type": "object", "properties": {
          "camera": {"type": "string", "description": "Camera name, e.g. Front Porch, Driveway, Back Yard."}},
          "required": ["camera"]}},
@@ -819,7 +1075,9 @@ def _handler_factory(tools: _Tools, token_ok: Callable[[str | None], bool]):
                     order = {c.id: i for i, c in enumerate(hub.cfg.cameras)}
                     cams = sorted(hub.cams.values(), key=lambda c: order.get(c.id, len(order)))
                     return self._send(200, {"cameras": [{"id": c.id, "name": c.cfg.name or c.id,
-                                                         "live": bool(c.latest_jpeg)} for c in cams]})
+                                                         "live": bool(c.latest_jpeg)} for c in cams] +
+                                            [{"id": w.id, "name": w.name, "live": True, "webcam": True}
+                                             for w in tools.webcams.values()]})
                 if parts == ["recordings", "last.json"]:
                     ls = tools.last_shown
                     return self._send(200, {"ts": ls["ts"], "ids": ls["ids"], "title": ls["title"]})
@@ -827,6 +1085,8 @@ def _handler_factory(tools: _Tools, token_ok: Callable[[str | None], bool]):
                     return self._recording(int(parts[1].split(".")[0]), parts[1].rsplit(".", 1)[-1])
                 if len(parts) == 3 and parts[0] == "cam":
                     cid = tools._cam_id(parts[1])
+                    if cid in tools.webcams:
+                        return self._webcam(cid, parts[2])
                     cam = hub.cams.get(cid)
                     if cam is None:
                         return self._send(404, {"error": "no such camera"})
@@ -851,6 +1111,91 @@ def _handler_factory(tools: _Tools, token_ok: Callable[[str | None], bool]):
                 log.warning("GET %s failed: %s", self.path, e)
                 return self._send(500, {"error": str(e)})
             return self._send(404, {"error": "not found"})
+
+        def _webcam(self, cid: str, what: str):
+            if what == "snapshot.jpg":
+                jpg = tools.webcams[cid].jpeg()
+                if not jpg:
+                    return self._send(503, {"error": tools.webcams[cid].error or "no frame yet"})
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(jpg)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(jpg)
+                return None
+            if what == "look.json":
+                res = tools.webcam_look(cid)
+                res["name"] = tools._cam_name(cid)
+                return self._send(200, res)
+            if what == "live.mp4":
+                return self._webcam_live(tools.webcams[cid])
+            if what == "frames.mjpeg":
+                return self._webcam_frames(tools.webcams[cid])
+            return self._send(404, {"error": "not found"})
+
+        def _webcam_frames(self, w):
+            """Every webcam frame as a 640-px JPEG in a multipart stream: for a local gesture recognizer. Keeps the
+            webcam open while connected."""
+            import cv2
+            if w.grab(full=False) is None:
+                return self._send(503, {"error": w.error or "webcam not available"})
+            self.close_connection = True
+            self.send_response(200)
+            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            ts = 0.0
+            try:
+                while True:
+                    img, ts2 = w.next_frame(ts, full=False)
+                    if img is None:
+                        if w.error is not None or w.grab(full=False) is None:
+                            break
+                        continue
+                    ts = ts2
+                    h, wd = img.shape[:2]
+                    small = img if wd <= 640 else cv2.resize(img, (640, int(h * 640 / wd)), interpolation=cv2.INTER_AREA)
+                    ok, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                    if not ok:
+                        continue
+                    b = buf.tobytes()
+                    self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\nX-Ts: %.3f\r\n\r\n"
+                                     % (len(b), ts) + b + b"\r\n")
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return None
+
+        def _webcam_live(self, w):
+            if w.grab() is None:
+                return self._send(503, {"error": w.error or "webcam not available"})
+            with _live_lock:
+                if _live_count["n"] >= LIVE_MAX:
+                    return self._send(503, {"error": "too many live streams"})
+                _live_count["n"] += 1
+            try:
+                self.close_connection = True
+                self.send_response(200)
+                self.send_header("Content-Type", "video/mp4")
+                self.send_header("X-Mime", w.LIVE_MIME)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Connection", "close")
+                self.end_headers()
+
+                def write(b: bytes) -> None:
+                    self.wfile.write(b)
+                    self.wfile.flush()
+                w.live(write)
+            except (BrokenPipeError, ConnectionResetError):
+                pass                                    # the viewer went away
+            except Exception as e:  # noqa: BLE001
+                log.info("webcam live ended: %s", e)
+            finally:
+                with _live_lock:
+                    _live_count["n"] -= 1
+            return None
 
         def _recording(self, det_id: int, ext: str):
             d = tools.db.one("SELECT id, camera_id, label, who, first_ts, last_ts, COALESCE(event_id, (SELECT l.event_id "

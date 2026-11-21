@@ -210,6 +210,24 @@ class ServerConfig(BaseModel):
     cert_file: Optional[str] = None    # your own certificate + key (PEM); relative paths are from the config folder
     key_file: Optional[str] = None
     mcp_port: Optional[int] = None     # if set, a read-only MCP server for local AI assistants on 127.0.0.1:<port>
+    # Local USB webcams the assistant may look through on demand (not recorded or watched by TheEye): the device is
+    # opened only while someone looks and released after a few idle seconds, so video calls can still use it.
+    mcp_webcams: list["WebcamConfig"] = Field(default_factory=list)
+
+
+class WebcamConfig(BaseModel):
+    id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,39}$")
+    name: str
+    device: str = "/dev/video0"
+    size: str = "1280x720"             # a size the webcam offers in MJPEG (v4l2-ctl --list-formats-ext)
+    # When only the gesture recognizer is reading frames (nobody viewing or looking), the webcam runs at this size
+    # and frame rate (frames.mjpeg scales them to 640 px). Keep the full size: a C920's native 640x360 mode gives
+    # pictures MediaPipe finds no hands in at all; 1280x720 scaled down works.
+    gesture_size: str = "1280x720"
+    gesture_fps: int = 30
+    # Manual exposure in gesture mode, in 100 µs units (150 = 15 ms), for a sharper swiping hand. 0 = auto-exposure
+    # (the default): a short exposure at full gain is too noisy and colour-cast for the hand detector.
+    gesture_exposure: int = 0
 
 
 class AnimalsConfig(BaseModel):
@@ -315,3 +333,6 @@ def save_config(cfg: Config, path: str | Path) -> None:
     if p.exists():
         p.replace(p.with_suffix(p.suffix + ".bak"))
     tmp.replace(p)
+
+
+ServerConfig.model_rebuild()
