@@ -2048,6 +2048,7 @@ async function loadPeople() {
     .map(ppTile).join('') || '<p class="muted">No one yet: add a person or pet above.</p>';
   $('#veh-grid').innerHTML = CARS.list.map(p => ppTile({ ...p, kind: 'car' })).join('')
     || '<p class="muted small">No vehicles yet: “+ Add” above, then choose Vehicle.</p>';
+  if (PPSEL.on) { $$('.pp-grid .pp-tile').forEach(t => t.classList.toggle('picked', PPSEL.picked.has(t.dataset.k))); ppSelCount(); return; }
   const open = ppOpen && $(`.pp-grid .pp-tile[data-k="${ppOpen}"]`);
   if (open) ppExpand(open); else ppOpen = null;
 }
@@ -2068,7 +2069,8 @@ const cfHtml = (f, it) => {
   const main = it.cover_chosen && it.cover?.id === f.id;
   return `<span class="cf${main ? ' main' : ''}" data-fid="${f.id}">${faceImg(f)}
     <button type="button" class="cf-star" title="${main ? 'Main picture' : 'Use as main picture'}" aria-label="Use as main picture" aria-pressed="${main}">${main ? '★' : '☆'}</button>
-    <button type="button" class="cf-x" title="Not ${esc(it.name)}: take this picture off (it won't be suggested for ${esc(it.name)} again)" aria-label="Not ${esc(it.name)}">✕</button></span>`;
+    <button type="button" class="cf-x" title="Not ${esc(it.name)}: take this picture off (it won't be suggested for ${esc(it.name)} again)" aria-label="Not ${esc(it.name)}">✕</button>
+    <input type="checkbox" class="pick" title="Select (to take several off at once); shift-click selects a run" aria-label="Select this picture"></span>`;
 };
 
 async function ppFill(tile) {
@@ -2080,7 +2082,7 @@ async function ppFill(tile) {
   catch (err) { body.innerHTML = `<span class="small warn">Failed: ${esc(err.message)}</span>`; return; }
   if (!tile.classList.contains('open')) return;
   body.innerHTML = `
-    <div class="pp-meta small muted">${it.n_confirmed} confirmed · seen ${it.n_seen}×${it.last_seen ? ' · last ' + esc(fmtTime(it.last_seen)) : ''}
+    <div class="pp-meta small muted"><span class="pp-counts">${ppCounts(it)}</span>
       <button type="button" class="small-btn" data-upload title="Add a photo of ${esc(it.name)} you took yourself">⬆ Upload photo</button>
       <button type="button" class="danger small-btn" data-del title="Remove ${esc(it.name)} and their examples">Remove</button></div>
     <div class="pp-upload" hidden></div>
@@ -2091,20 +2093,88 @@ async function ppFill(tile) {
         : it.plate_src === 'read' ? 'Read by the camera: correct it if it’s wrong.' : 'Entered by you.'}
         A sighting with this plate is named ${esc(it.name)} whatever it looks like; one with a clearly different plate never is.</span></form>` : ''}
     <div class="sub-h">Pictures · ☆ chooses the main one, ✕ takes a wrong one off</div>
+    ${conf.length > 1 ? `<div class="bulk row small" data-for="faces"><button type="button" class="small-btn" data-pick="all">Select all</button>
+      <button type="button" class="small-btn" data-pick="none">Clear</button>
+      <button type="button" class="danger small-btn" data-bulk="off" disabled>Take selected off</button></div>` : ''}
     <div class="faces">${conf.map(f => cfHtml(f, it)).join('') || `<span class="muted small">${esc(K.none(it.name))}</span>`}</div>
     <div class="sub-h">${esc(K.ask(it.name, it.n_confirmed))}</div>
+    <div class="bulk row small" data-for="sugg" hidden><button type="button" class="small-btn" data-pick="all">Select all shown</button>
+      <button type="button" class="small-btn" data-pick="none">Clear</button>
+      <button type="button" class="small-btn" data-bulk="yes" disabled>✓ Yes to selected</button>
+      <button type="button" class="small-btn" data-bulk="no" disabled>✗ No to selected</button></div>
     <div class="sugg"><span class="muted small">Looking…</span></div>`;
   const box = $('.sugg', body);
   const s = await api(`${K.api}/${it.id}/suggestions?limit=40`).catch(() => []);
   if (!tile.classList.contains('open')) return;
-  box.innerHTML = s.map(f => `
+  box.innerHTML = s.map(f => sgHtml(f, it)).join('') || `<span class="muted small">${esc(K.empty(it.n_confirmed))}</span>`;
+  $('.bulk[data-for="sugg"]', body).hidden = s.length < 2;
+}
+
+const ppCounts = it => `${it.n_confirmed} confirmed · seen ${it.n_seen}×${it.last_seen ? ' · last ' + esc(fmtTime(it.last_seen)) : ''}`;
+const ppHeadCount = it => `${it.kind === 'car' && it.plate ? `<span class="chip plate">${esc(it.plate)}</span> ` : PP[it.kind].word + ' · '}${it.n_confirmed} picture${it.n_confirmed === 1 ? '' : 's'}`;
+const sgHtml = (f, it) => `
     <div class="sg" data-fid="${f.id}">
       ${faceImg(f)}
       <div class="small muted">${esc(camName(f.camera_id))}<br>${esc(new Date(f.ts * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}</div>
       <div class="small">${f.plate ? `<span class="chip plate">${esc(f.plate)}</span> ` : ''}${f.score >= 1 && f.plate ? 'plate' : f.score != null ? Math.round(f.score * 100) + '%' : ''} ${f.status === 'auto' ? '· tagged' : ''}</div>
-      <div class="row" style="gap:4px"><button type="button" data-v="yes" title="Yes, this is ${esc(it.name)}">✓</button>
+      <div class="row sg-btns" style="gap:4px"><button type="button" data-v="yes" title="Yes, this is ${esc(it.name)}">✓</button>
         <button type="button" data-v="no" title="No, not ${esc(it.name)}">✗</button></div>
-    </div>`).join('') || `<span class="muted small">${esc(K.empty(it.n_confirmed))}</span>`;
+      <input type="checkbox" class="pick" title="Select (to answer several at once); shift-click selects a run" aria-label="Select this one">
+    </div>`;
+
+// After answers: update the open tile where it is (counts, then any newly matched suggestions added at the end),
+// instead of redrawing the page, so nothing moves under your finger. Answered suggestions stay put, dimmed.
+let ppQuietTimer;
+function ppRefreshSoon(tile) { clearTimeout(ppQuietTimer); ppQuietTimer = setTimeout(() => ppRefresh(tile), 4000); }
+async function ppRefresh(tile) {
+  if (!tile.isConnected) return;
+  const [kind, id] = tile.dataset.k.split(':'), K = PP[kind];
+  try { K.store.list = (await api(K.api))[{ person: 'people', pet: 'pets', car: 'cars' }[kind]]; } catch { return; }
+  const it = ppItem(tile.dataset.k);
+  if (!it.name) return;
+  $('.pp-head .small', tile).innerHTML = ppHeadCount(it);
+  const counts = $('.pp-counts', tile);
+  if (counts) counts.innerHTML = ppCounts(it);
+  if (!tile.classList.contains('open')) return;
+  const s = await api(`${K.api}/${id}/suggestions?limit=40`).catch(() => null);
+  const box = $('.sugg', tile);
+  if (!s || !box || !tile.classList.contains('open')) return;
+  const shown = new Set($$('.sg, .cf', tile).map(x => x.dataset.fid));
+  const add = s.filter(f => !shown.has(String(f.id)));
+  if (!add.length) return;
+  $(':scope > span.muted', box)?.remove();
+  const first = box.children.length;
+  box.insertAdjacentHTML('beforeend', add.map(f => sgHtml(f, it)).join(''));
+  [...box.children].slice(first).forEach(el => $$('img', el).forEach(imgNow));
+  $('.bulk[data-for="sugg"]', tile).hidden = $$('.sg:not(.done)', box).length < 2;
+}
+
+// Pictures added after the page drew: load them now, not lazily (Safari/iPad WebKit can leave a lazy image that's
+// inserted later blank), and try once more if a load fails.
+function imgNow(img) {
+  img.removeAttribute('loading');
+  img.addEventListener('error', () => {
+    if (!img.dataset.retried) { img.dataset.retried = '1'; img.src = img.src.split('?')[0] + '?r=' + Date.now(); }
+  });
+  img.src = img.getAttribute('src');
+  return img;
+}
+
+// An answered suggestion: stays where it was, dimmed and labelled, so the rest don't shift.
+function sgDone(sg, yes) {
+  sg.classList.add('done');
+  const pick = $('input.pick', sg); if (pick) { pick.checked = false; pick.remove(); }
+  $('.sg-btns', sg).innerHTML = `<span class="small ${yes ? 'ok' : 'muted'}">${yes ? '✓ Added' : '✗ Not'}</span>`;
+}
+
+// A picture confirmed from the suggestions joins the pictures row; keep the screen still while that row grows.
+function cfAdd(tile, it, sg) {
+  const row = $('.faces', tile), before = sg.getBoundingClientRect().top;
+  $(':scope > span.muted', row)?.remove();
+  row.insertAdjacentHTML('beforeend', cfHtml({ id: +sg.dataset.fid, path: '', camera_id: '', ts: 0 }, it));
+  $('img', row.lastElementChild).replaceWith(imgNow($('img', sg).cloneNode()));
+  const moved = sg.getBoundingClientRect().top - before;
+  if (moved) window.scrollBy(0, moved);
 }
 
 // "Upload photo": pick a photo, mark the part showing them (needed for pets and vehicles, optional for a face),
@@ -2161,9 +2231,6 @@ async function ppUploadShow(tile, it, file) {
   };
 }
 
-// Redraw once the clicking stops, so the page doesn't jump around under the mouse.
-let ppReloadTimer;
-function ppReloadSoon() { clearTimeout(ppReloadTimer); ppReloadTimer = setTimeout(loadPeople, 4000); }
 
 // Saving a vehicle's plate (typed in, or a correction of the one the camera read).
 $('#tab-people').addEventListener('submit', async ev => {
@@ -2175,7 +2242,7 @@ $('#tab-people').addEventListener('submit', async ev => {
     const r = await api(`/api/cars/${it.id}/plate`, { method: 'PUT', body: { plate: f.plate.value } });
     f.plate.value = r.plate || '';
     alertInline(btn, r.plate ? 'Saved: looking through past sightings again' : 'Plate cleared');
-    ppReloadSoon();
+    ppRefreshSoon(f.closest('.pp-tile'));
   } catch (err) { alertInline(btn, 'Failed: ' + err.message); }
   finally { btn.disabled = false; }
 });
@@ -2183,6 +2250,11 @@ $('#tab-people').addEventListener('submit', async ev => {
 const ppClick = async ev => {
   const t = ev.target, tile = t.closest('.pp-tile');
   if (!tile) return;
+  if (PPSEL.on) {
+    const on = !tile.classList.contains('picked'), all = $$('.pp-grid .pp-tile');
+    shiftRange(all, tile, ev.shiftKey, PPSEL, x => x.classList.contains('picked'), (x, v) => x.classList.toggle('picked', v), on);
+    ppSelCount(); return;
+  }
   if (t.closest('.pp-head')) return tile.classList.contains('open') ? ppCollapse(tile) : ppExpand(tile);
   const it = ppItem(tile.dataset.k), K = PP[it.kind];
   if (t.matches('img.face[data-ev]'))
@@ -2203,7 +2275,7 @@ const ppClick = async ev => {
   if (t.matches('.cf-x')) {
     const cf = t.closest('.cf');
     t.disabled = true;
-    try { await api(K.pic(cf.dataset.fid), { method: 'POST', body: { [K.owner]: it.id, verdict: 'no' } }); cf.remove(); ppReloadSoon(); }
+    try { await api(K.pic(cf.dataset.fid), { method: 'POST', body: { [K.owner]: it.id, verdict: 'no' } }); cf.remove(); ppBulkCount(tile); ppRefreshSoon(tile); }
     catch (err) { t.disabled = false; alertInline(t, 'Failed: ' + err.message); }
     return;
   }
@@ -2212,16 +2284,23 @@ const ppClick = async ev => {
     $$('button', sg).forEach(x => x.disabled = true);
     try { await api(K.pic(sg.dataset.fid), { method: 'POST', body: { [K.owner]: it.id, verdict: t.dataset.v } }); }
     catch (err) { $$('button', sg).forEach(x => x.disabled = false); alertInline(t, 'Failed: ' + err.message); return; }
-    if (t.dataset.v === 'yes') {          // move the picture up into the confirmed row right away
-      const row = $('.faces', tile), img = $('img', sg);
-      $('span.muted', row)?.remove();
-      row.insertAdjacentHTML('afterbegin', cfHtml({ id: +sg.dataset.fid, path: '', camera_id: '', ts: 0 }, it));
-      $('img', row.firstElementChild).replaceWith(img);
-    }
-    sg.remove();
-    ppReloadSoon();      // counts, and suggestions re-matched against the new example (runs in the background)
+    if (t.dataset.v === 'yes') cfAdd(tile, it, sg);
+    sgDone(sg, t.dataset.v === 'yes');
+    ppBulkCount(tile);
+    ppRefreshSoon(tile);   // counts, and suggestions re-matched against the new example (runs in the background)
     return;
   }
+  if (t.matches('input.pick')) {
+    const row = t.closest('.faces, .sugg'), boxes = $$('input.pick', row);
+    shiftRange(boxes, t, ev.shiftKey, row, x => x.checked, (x, v) => x.checked = v, t.checked);
+    return ppBulkCount(tile);
+  }
+  if (t.matches('[data-pick]')) {
+    const row = $(`.${t.closest('.bulk').dataset.for}`, tile);
+    $$('input.pick', row).forEach(c => c.checked = t.dataset.pick === 'all');
+    return ppBulkCount(tile);
+  }
+  if (t.matches('[data-bulk]')) return ppBulkApply(tile, it, t);
   if (t.matches('[data-upload]')) return ppUploadStart(tile, it);
   if (t.matches('[data-del]')) {
     if (t.dataset.armed !== '1') { t.dataset.armed = '1'; t.textContent = 'Click again to remove'; return; }
@@ -2234,9 +2313,13 @@ $('#veh-grid').onclick = ppClick;
 
 // "+ Add" opens a small form to choose a person, pet or vehicle, then name them.
 function ppAddHint() {
-  const f = $('#pp-add'), kind = f.kind.value;
+  const f = $('#pp-add'), kind = f.kind.value, bulk = f.bulk.checked;
   f.name.placeholder = { pet: "Pet's name", car: 'Name, e.g. Silver SUV' }[kind] || 'Name';
-  $('#pp-add-plate').hidden = kind !== 'car';
+  f.names.placeholder = kind === 'car' ? 'One vehicle per line, plate after a comma (optional):\nSilver SUV, 7ABC123\nRed truck'
+    : `One ${kind === 'pet' ? "pet's name" : 'name'} per line`;
+  f.name.hidden = bulk; f.name.required = !bulk; f.names.hidden = !bulk;
+  $('[type=submit]', f).textContent = bulk ? 'Add all' : 'Add';
+  $('#pp-add-plate').hidden = kind !== 'car' || bulk;
   $('#pp-add-hint').textContent = {
     pet: 'Then click them below and pick their pictures from the dogs and cats seen. A handful from different cameras and times of day works best.',
     car: 'Plate optional: if you leave it out it’s read off the first sighting you confirm, and you can correct it. Then click the vehicle below and pick its pictures from the vehicles seen driving by: a few from different cameras, day and night.',
@@ -2244,14 +2327,56 @@ function ppAddHint() {
 }
 function ppAddShow(on) {
   $('#pp-add').hidden = !on; $('#pp-add-btn').hidden = on; $('#pp-add-btn').setAttribute('aria-expanded', String(on));
-  if (on) { ppAddHint(); $('#pp-add').name.focus(); } else $('#pp-add').reset();
+  if (on) { ppSelShow(false); ppAddHint(); const f = $('#pp-add'); (f.bulk.checked ? f.names : f.name).focus(); }
+  else { $('#pp-add').reset(); $('#pp-add-result').hidden = true; }
 }
 $('#pp-add-btn').onclick = () => ppAddShow(true);
 $('#pp-add-cancel').onclick = () => ppAddShow(false);
 $$('#pp-add input[name="kind"]').forEach(r => r.onchange = ppAddHint);
+$('#pp-add').bulk.onchange = () => { ppAddHint(); const f = $('#pp-add'); (f.bulk.checked ? f.names : f.name).focus(); };
+
+// "Several at once": one name per line (vehicles: "name, plate"); each is added like a single one, and lines that
+// fail (name taken, too long) stay in the box with the reason so they can be fixed and added again.
+async function ppAddBulk(f, kind) {
+  const btn = $('[type=submit]', f), out = $('#pp-add-result');
+  const seen = new Set(), lines = [];
+  for (const raw of f.names.value.split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    const [name, plate] = kind === 'car' ? [line.split(',')[0].trim(), line.split(',').slice(1).join(',').trim()] : [line, ''];
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;            // the same name twice in the list: add it once
+    seen.add(key); lines.push({ line, name, plate });
+  }
+  if (!lines.length) return alertInline(btn, 'Type at least one name');
+  btn.disabled = true;
+  const added = [], failed = [];
+  for (const [i, l] of lines.entries()) {
+    btn.textContent = `Adding ${i + 1} of ${lines.length}…`;
+    const why = !l.name || l.name.length > 40 ? 'name must be 1-40 characters'
+      : l.plate.length > 12 ? 'plate too long' : '';
+    if (why) { failed.push({ ...l, why }); continue; }
+    try {
+      await api(PP[kind].api, { method: 'POST', body: kind === 'car' ? { name: l.name, plate: l.plate } : { name: l.name } });
+      added.push(l.name);
+    } catch (err) {
+      failed.push({ ...l, why: err.message.includes('409') ? 'name already used' : err.message.includes('503')
+        ? 'recognition not available' : err.message });
+    }
+  }
+  btn.disabled = false; btn.textContent = 'Add all';
+  f.names.value = failed.map(x => x.line).join('\n');
+  out.hidden = false;
+  out.innerHTML = `${added.length ? `Added ${added.length}.` : ''}${failed.length ? ` <span class="warn">Not added (left in the box): ${
+    failed.map(x => `${esc(x.name || x.line)}: ${esc(x.why)}`).join('; ')}</span>` : ''}`;
+  await loadPeople();
+  if (!failed.length) setTimeout(() => { if (!f.names.value) ppAddShow(false); }, 2500);
+}
+
 $('#pp-add').onsubmit = async ev => {
   ev.preventDefault();
   const f = ev.target, kind = f.kind.value;
+  if (f.bulk.checked) return ppAddBulk(f, kind);
   try {
     const body = kind === 'car' ? { name: f.name.value, plate: f.plate.value } : { name: f.name.value };
     const r = await api(PP[kind].api, { method: 'POST', body });
@@ -2260,3 +2385,86 @@ $('#pp-add').onsubmit = async ev => {
     $(`.pp-grid .pp-tile[data-k="${ppOpen}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   } catch (err) { alertInline(f.querySelector('button[type=submit]'), err.message.includes('409') ? 'That name is already used' : 'Failed: ' + err.message); }
 };
+
+// "Select…": click tiles to pick several, then remove them together (asks for a second click first).
+const PPSEL = { on: false, picked: new Set() };
+function ppSelCount() {
+  PPSEL.picked = new Set($$('.pp-grid .pp-tile.picked').map(t => t.dataset.k));
+  const n = PPSEL.picked.size, del = $('#pp-sel-del');
+  $('#pp-sel-n').textContent = n ? `${n} selected` : 'Click the ones to remove (shift-click selects a run)';
+  del.disabled = !n; del.dataset.armed = ''; del.textContent = n ? `Remove ${n}` : 'Remove selected';
+}
+function ppSelShow(on) {
+  PPSEL.on = on;
+  $('#pp-selbar').hidden = !on; $('#pp-sel-btn').hidden = on; $('#pp-sel-btn').setAttribute('aria-pressed', String(on));
+  $('#tab-people').classList.toggle('pp-selecting', on);
+  if (on) { ppAddShow(false); $$('.pp-grid .pp-tile.open').forEach(ppCollapse); }
+  else $$('.pp-grid .pp-tile.picked').forEach(t => t.classList.remove('picked'));
+  ppSelCount();
+}
+$('#pp-sel-btn').onclick = () => ppSelShow(true);
+$('#pp-sel-done').onclick = () => ppSelShow(false);
+$('#pp-sel-all').onclick = () => { $$('.pp-grid .pp-tile').forEach(t => t.classList.add('picked')); ppSelCount(); };
+$('#pp-sel-none').onclick = () => { $$('.pp-grid .pp-tile.picked').forEach(t => t.classList.remove('picked')); ppSelCount(); };
+$('#pp-sel-del').onclick = async () => {
+  const b = $('#pp-sel-del'), keys = [...PPSEL.picked];
+  if (!keys.length) return;
+  if (b.dataset.armed !== '1') {
+    b.dataset.armed = '1';
+    b.textContent = `Click again to remove ${keys.length} and their pictures`;
+    return;
+  }
+  b.disabled = true;
+  const failed = [];
+  for (const [i, k] of keys.entries()) {
+    b.textContent = `Removing ${i + 1} of ${keys.length}…`;
+    const [kind, id] = k.split(':');
+    try { await api(`${PP[kind].api}/${id}`, { method: 'DELETE' }); }
+    catch (err) { failed.push(ppItem(k).name || k); }
+  }
+  PPSEL.picked = new Set(); ppOpen = null;
+  await loadPeople();
+  if (failed.length) alertInline($('#pp-sel-n'), `Couldn’t remove: ${failed.join(', ')}`);
+};
+
+// Shift-click selects everything between the last one clicked and this one (as in a file manager), all set the
+// way this click set it. `memo` keeps the last one clicked; `items` is the list in screen order.
+function shiftRange(items, el, shift, memo, get, set, on) {
+  const a = items.indexOf(memo.lastPick), b = items.indexOf(el);
+  set(el, on);
+  if (shift && a >= 0 && b >= 0) items.slice(Math.min(a, b), Math.max(a, b) + 1).forEach(x => set(x, on));
+  memo.lastPick = el;
+}
+
+// Several pictures at once: tick them, then "Yes/No to selected" (suggestions) or "Take selected off" (pictures).
+function ppBulkCount(tile) {
+  for (const bar of $$('.bulk', tile)) {
+    const n = $$(`.${bar.dataset.for} input.pick:checked`, tile).length;
+    $$('[data-bulk]', bar).forEach(b => {
+      b.disabled = !n; b.dataset.armed = '';
+      b.textContent = { yes: '✓ Yes to', no: '✗ No to', off: 'Take off' }[b.dataset.bulk] + (n ? ` ${n} selected` : ' selected');
+    });
+  }
+}
+async function ppBulkApply(tile, it, b) {
+  const K = PP[it.kind], bar = b.closest('.bulk'), v = b.dataset.bulk;
+  const items = $$(`.${bar.dataset.for} input.pick:checked`, tile).map(c => c.closest('.sg, .cf'));
+  if (!items.length) return;
+  if (v === 'off' && b.dataset.armed !== '1') {
+    b.dataset.armed = '1'; b.textContent = `Click again to take ${items.length} off`; return;
+  }
+  $$('button', bar).forEach(x => x.disabled = true);
+  let bad = 0;
+  for (const [i, el] of items.entries()) {
+    b.textContent = `${i + 1} of ${items.length}…`;
+    try {
+      await api(K.pic(el.dataset.fid), { method: 'POST', body: { [K.owner]: it.id, verdict: v === 'yes' ? 'yes' : 'no' } });
+      if (v === 'off') el.remove();
+      else { if (v === 'yes') cfAdd(tile, it, el); sgDone(el, v === 'yes'); }
+    } catch { bad++; }
+  }
+  $$('button', bar).forEach(x => x.disabled = false);
+  ppBulkCount(tile);
+  if (bad) alertInline(b, `${bad} failed`);
+  ppRefreshSoon(tile);   // counts, and newly matched suggestions added at the end
+}

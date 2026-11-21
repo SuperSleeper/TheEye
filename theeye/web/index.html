@@ -80,7 +80,15 @@
     <div class="setup">
       <div class="card-s">
         <div class="card-h"><h2>People, Pets &amp; Vehicles</h2><span id="pp-stats" class="muted small"></span>
+          <button type="button" id="pp-sel-btn" aria-pressed="false" title="Pick several to remove at once">Select…</button>
           <button type="button" id="pp-add-btn" class="primary" aria-expanded="false">+ Add person, pet or vehicle</button></div>
+        <div id="pp-selbar" class="pp-selbar row" hidden>
+          <span id="pp-sel-n" class="small">Click the ones to remove (shift-click selects a run)</span>
+          <button type="button" id="pp-sel-all" class="small-btn">Select all</button>
+          <button type="button" id="pp-sel-none" class="small-btn">Clear</button>
+          <button type="button" id="pp-sel-del" class="danger small-btn" disabled>Remove selected</button>
+          <button type="button" id="pp-sel-done" class="small-btn">Done</button>
+        </div>
         <p class="muted small">Family recognised by face, dogs and cats by how they look, and your vehicles by look and
           licence plate, so recordings of them arriving and leaving are tagged with the name and search finds them
           (“sam yesterday”). Click one to confirm more sightings or to choose its main picture. Everything stays on
@@ -91,9 +99,12 @@
             <label><input type="radio" name="kind" value="pet"> Pet (dog or cat)</label>
             <label><input type="radio" name="kind" value="car"> Vehicle</label>
           </div>
+          <label class="small"><input type="checkbox" name="bulk"> Several at once</label>
           <div class="row" style="gap:8px"><input name="name" placeholder="Name" maxlength="40" required>
+            <textarea name="names" rows="6" placeholder="One name per line" hidden></textarea>
             <input id="pp-add-plate" name="plate" placeholder="Licence plate (optional)" maxlength="12" autocomplete="off" hidden>
             <button type="submit" class="primary">Add</button><button type="button" id="pp-add-cancel">Cancel</button></div>
+          <p id="pp-add-result" class="small" hidden></p>
           <p id="pp-add-hint" class="muted small"></p>
         </form>
       </div>
