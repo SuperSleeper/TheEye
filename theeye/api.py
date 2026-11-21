@@ -99,13 +99,14 @@ class ZoneIn(BaseModel):
     camera_id: str
     name: str
     points: list[list[float]]
-    kind: str = Field("motion", pattern="^(motion|detect|exclude)$")
+    kind: str = Field("motion", pattern="^(motion|detect|exclude|watch)$")
     sensitivity: float = Field(0.5, ge=0, le=1)
     min_area: float = Field(0.02, ge=0, le=1)
     min_frames: int = Field(2, ge=1, le=100)
     color: str = "#ff3b30"
     enabled: bool = True
     ai: bool = True
+    watch_for: Optional[str] = Field(None, max_length=60)
 
 
 class RuleIn(BaseModel):
@@ -336,27 +337,66 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
             raise HTTPException(400, "zone needs at least 3 points")
         pts = [[min(1.0, max(0.0, x)), min(1.0, max(0.0, y))] for x, y in z.points]
         return (z.camera_id, z.name, json.dumps(pts), z.kind, z.sensitivity, z.min_area, z.min_frames,
-                z.color, int(z.enabled), int(z.ai))
+                z.color, int(z.enabled), int(z.ai), (z.watch_for or "").strip() or None)
 
     @app.post("/api/zones")
     def zone_create(z: ZoneIn):
         cam_or_404(z.camera_id)
-        zid = db.insert("INSERT INTO zones(camera_id,name,points,kind,sensitivity,min_area,min_frames,color,enabled,ai)"
-                        " VALUES(?,?,?,?,?,?,?,?,?,?)", _zone_params(z))
+        zid = db.insert("INSERT INTO zones(camera_id,name,points,kind,sensitivity,min_area,min_frames,color,enabled,ai,"
+                        "watch_for) VALUES(?,?,?,?,?,?,?,?,?,?,?)", _zone_params(z))
+        if hub.watch and z.kind == "watch":
+            hub.watch.check_now()
         hub.reload_zones()
         return {"id": zid}
 
     @app.put("/api/zones/{zid}")
     def zone_update(zid: int, z: ZoneIn):
         db.execute("UPDATE zones SET camera_id=?,name=?,points=?,kind=?,sensitivity=?,min_area=?,min_frames=?,"
-                   "color=?,enabled=?,ai=? WHERE id=?", _zone_params(z) + (zid,))
+                   "color=?,enabled=?,ai=?,watch_for=? WHERE id=?", _zone_params(z) + (zid,))
         hub.reload_zones()
+        if hub.watch and z.kind == "watch":
+            hub.watch.check_now()
         return {"id": zid}
 
     @app.delete("/api/zones/{zid}")
     def zone_delete(zid: int):
         db.execute("DELETE FROM zones WHERE id=?", (zid,))
         hub.reload_zones()
+        if hub.watch:
+            for x in db.all("SELECT id FROM watch_examples WHERE zone_id=?", (zid,)):
+                hub.watch.forget(x["id"])
+            db.execute("DELETE FROM watch_state WHERE zone_id=?", (zid,))
+        return {"ok": True}
+
+    # --------------------------------------------------------------- watch zones (theeye.watch)
+    def _watch():
+        if not hub.watch:
+            raise HTTPException(503, "watch zones need picture search (CLIP) turned on")
+        return hub.watch
+
+    @app.get("/api/watch")
+    def watch_status(zone_id: Optional[int] = None):
+        return _watch().status(zone_id)
+
+    @app.post("/api/watch/{zid}/teach")
+    async def watch_teach(zid: int, state: str = Body(..., embed=True)):
+        """'Right now it's there / gone / can't see': keep this picture as an example."""
+        w = _watch()
+        try:
+            return await asyncio.to_thread(w.teach, zid, state)
+        except ValueError:
+            raise HTTPException(422, "state must be there, gone or blocked")
+        except KeyError:
+            raise HTTPException(404, "no such watch zone (is it saved and enabled?)")
+        except RuntimeError as e:
+            raise HTTPException(503, str(e))
+
+    @app.delete("/api/watch/examples/{xid}")
+    def watch_forget(xid: int):
+        try:
+            _watch().forget(xid)
+        except KeyError:
+            raise HTTPException(404)
         return {"ok": True}
 
     # --------------------------------------------------------------- rules
@@ -833,6 +873,29 @@ def create_app(hub: Hub, searcher: Searcher, config_path: Path) -> FastAPI:
         except KeyError:
             raise HTTPException(404)
         return {"ok": True}
+
+    # ------------------------------------------------------------ vehicles tagged by example (theeye.vehicletags)
+    @app.get("/api/vehicle-tags")
+    def vehicle_tags():
+        return {"kinds": hub.vtags.kinds() if hub.vtags else []}
+
+    @app.post("/api/detections/{det_id}/vehicle")
+    async def detection_vehicle(det_id: int, tag: str = Body(..., embed=True)):
+        """'This is a Short Bus' / 'not a delivery' from the event player: tag it and keep it as an example."""
+        if not hub.vtags:
+            raise HTTPException(503, "vehicle tagging isn't available")
+        tag = tag.strip()
+        known = {k.lower(): k for k in hub.vtags.kinds()}
+        if tag.lower() != "none" and tag.lower() not in known:
+            raise HTTPException(422, "unknown vehicle tag")
+        tag = known.get(tag.lower(), "none")
+        try:
+            n = await asyncio.to_thread(hub.vtags.mark, det_id, tag)
+        except KeyError:
+            raise HTTPException(404)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        return {"ok": True, "retagged": n}
 
     @app.get("/api/vehicles")
     def vehicles(status: str = "all", limit: int = Query(200, le=2000)):

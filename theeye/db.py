@@ -153,6 +153,33 @@ CREATE TABLE IF NOT EXISTS animal_marks (
     ts REAL
 );
 
+-- Vehicles you tagged in the player ("this is a Short Bus", "not a delivery"): examples for look-alikes
+-- (theeye.vehicletags).
+CREATE TABLE IF NOT EXISTS vehicle_marks (
+    detection_id INTEGER PRIMARY KEY,
+    tag TEXT NOT NULL,                          -- a service (USPS), your own kind (Short Bus), or none
+    embedding BLOB,                             -- the detection's CLIP picture
+    ts REAL
+);
+
+-- Watch zones (theeye.watch): pictures of the zone you marked there / gone / blocked, and what it last decided.
+CREATE TABLE IF NOT EXISTS watch_examples (
+    id INTEGER PRIMARY KEY,
+    zone_id INTEGER NOT NULL,
+    state TEXT NOT NULL,                        -- there | gone | blocked (can't see: a car in front)
+    embedding BLOB NOT NULL,                    -- CLIP picture of the zone, normalised float32
+    path TEXT,                                  -- the picture, relative to the data folder
+    ts REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS watch_examples_zone ON watch_examples(zone_id);
+CREATE TABLE IF NOT EXISTS watch_state (
+    zone_id INTEGER PRIMARY KEY,
+    state TEXT,                                 -- there | gone | NULL (not decided yet)
+    since REAL,
+    blocked INTEGER NOT NULL DEFAULT 0,         -- can't see it right now (state is the last one seen)
+    checked REAL
+);
+
 -- Repeat-vehicle tracking: one row per distinct vehicle (matched by plate or appearance).
 CREATE TABLE IF NOT EXISTS vehicles (
     id INTEGER PRIMARY KEY,
@@ -248,6 +275,7 @@ class DB:
         },
         "zones": {
             "ai": "INTEGER NOT NULL DEFAULT 1",           # objects only count when their base is inside such a zone
+            "watch_for": "TEXT",                          # watch zones: what to call the thing ("Trash cans"); NULL = zone name
         },
         "detections": {
             "vehicle_id": "INTEGER",                      # repeat-vehicle tracking

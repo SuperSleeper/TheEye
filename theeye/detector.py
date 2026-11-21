@@ -319,7 +319,8 @@ class Detector:
         zones = [z for z in self.zones_for(cam) if z.enabled]
         excl = [z for z in zones if z.kind == "exclude"]
         # Zones marked "only detect objects inside": if any exist, objects outside all of them are ignored.
-        ai_zones = [z for z in zones if z.kind != "exclude" and (z.ai or z.kind == "detect")]
+        # Watch zones (theeye.watch) only look at a picture of the spot: they never gate or tag objects.
+        ai_zones = [z for z in zones if z.kind in ("motion", "detect") and (z.ai or z.kind == "detect")]
         dets = []
         for b in res.boxes:
             x1, y1, x2, y2 = (b.xyxy[0].tolist())
@@ -331,7 +332,7 @@ class Detector:
             if ai_zones and not any(z.contains(ax, ay) for z in ai_zones):
                 continue
             label = self._names[int(b.cls[0])]
-            zids = {z.id for z in zones if z.kind != "exclude" and z.contains(ax, ay)}
+            zids = {z.id for z in zones if z.kind in ("motion", "detect") and z.contains(ax, ay)}
             dets.append((label, float(b.conf[0]), nb, zids))
 
         cam_tracks = self.tracks.setdefault(cam, {})

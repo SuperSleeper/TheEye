@@ -765,6 +765,8 @@ async function openEvent(id, seek) {
         <option value="">What animal?</option>${ANIMAL_KINDS.filter(k => k !== (d.animal || d.label)).map(k => `<option value="${esc(k)}">This is a ${esc(k)}</option>`).join('')}</select>` : ''}
       ${(d.label === 'dog' || d.label === 'cat') && PETS.list.length ? `<select class="pet" data-det="${d.id}" title="Which pet is this? Teaches pet recognition">
         <option value="">${d.who ? esc(d.who) : 'Which pet?'}</option>${d.who ? `<option value="0">Not ${esc(d.who)}</option>` : ''}${PETS.list.filter(p => p.name !== d.who).map(p => `<option value="${p.id}">This is ${esc(p.name)}</option>`).join('')}</select>` : ''}
+      ${VEHICLE_LABELS.includes(d.label) && VEHICLE_TAGS.length ? `<select class="vtag" data-det="${d.id}" title="What kind of vehicle is this? Later look-alikes get the same tag">
+        <option value="">What vehicle?</option>${VEHICLE_TAGS.filter(k => k !== d.subtype).map(k => `<option value="${esc(k)}">This is ${/^[AEIOU]/.test(k) ? 'an' : 'a'} ${esc(k)}</option>`).join('')}${d.subtype ? `<option value="none">Not a ${esc(d.subtype)} (ordinary vehicle)</option>` : ''}</select>` : ''}
       ${VEHICLE_LABELS.includes(d.label) && CARS.list.length ? `<select class="car" data-det="${d.id}" title="Which of your vehicles is this? Teaches vehicle recognition">
         <option value="">${d.who ? esc(d.who) : 'Which vehicle?'}</option>${d.who ? `<option value="0">Not ${esc(d.who)}</option>` : ''}${CARS.list.filter(p => p.name !== d.who).map(p => `<option value="${p.id}">This is ${esc(p.name)}</option>`).join('')}</select>` : ''}</span>`).join('') || '<span class="muted">none</span>'}</div>
     <div style="margin-top:6px"><b>Motion triggers</b>: ${e.motion.length} ${e.motion.map(m => `<span class="chip">zone ${m.zone_id || 'full'} · ${fmtDur(m.end_ts ? m.end_ts - m.start_ts : null)}</span>`).join(' ')}</div>
@@ -799,6 +801,12 @@ async function openEvent(id, seek) {
     if (s.value === '') return;
     s.disabled = true;
     try { await api(`/api/detections/${s.dataset.det}/animal`, { method: 'POST', body: { kind: s.value } }); openEvent(id, v.currentTime); }
+    catch (err) { s.disabled = false; s.value = ''; alertInline(s, 'Failed: ' + err.message); }
+  });
+  $$('#pl-info select.vtag').forEach(s => s.onchange = async () => {
+    if (s.value === '') return;
+    s.disabled = true;
+    try { await api(`/api/detections/${s.dataset.det}/vehicle`, { method: 'POST', body: { tag: s.value } }); openEvent(id, v.currentTime); }
     catch (err) { s.disabled = false; s.value = ''; alertInline(s, 'Failed: ' + err.message); }
   });
   $$('#pl-info select.pet').forEach(s => s.onchange = async () => {
@@ -1163,11 +1171,48 @@ function selectZone(z) {
     for (const k of ['name', 'kind', 'sensitivity', 'min_area', 'min_frames', 'color']) f.elements[k].value = Z.sel[k];
     f.elements.enabled.checked = Z.sel.enabled;
     f.elements.ai.checked = Z.sel.ai ?? true;
+    f.elements.watch_for.value = Z.sel.watch_for || '';
     updateVals();
     $('#zn-delete').classList.toggle('hidden', !Z.sel.id);
   }
   $$('#zn-list li').forEach(li => li.classList.toggle('sel', +li.dataset.id === Z.sel?.id));
+  zoneKindFields();
   drawZones();
+}
+// Watch zones (theeye/watch.py): no motion settings; instead what it decided, the picture it looked at, and teach buttons.
+function zoneKindFields() {
+  const watch = $('#zn-form').elements.kind.value === 'watch';
+  $('#zn-watch').classList.toggle('hidden', !watch);
+  $('#zn-motion-fields').classList.toggle('hidden', watch);
+  clearInterval(timers.zwatch); delete timers.zwatch;
+  if (watch && Z.sel?.id && Z.sel.kind === 'watch') { loadWatch(); timers.zwatch = setInterval(loadWatch, 10000); }
+  else $('#zn-watch-status').innerHTML = watch ? '<p class="muted small">Save the zone, then teach it what it sees.</p>' : '';
+}
+const WATCH_WORD = { there: "It's there", gone: "It's gone", blocked: "Can't see it" };
+async function loadWatch() {
+  const zid = Z.sel?.id, el = $('#zn-watch-status');
+  let w;
+  try { [w] = await api(`/api/watch?zone_id=${zid}`); } catch (e) { el.innerHTML = `<p class="muted small">${esc(e.message)}</p>`; return; }
+  if (!w || Z.sel?.id !== zid) return;
+  const c = w.counts, ready = c.there && c.gone;
+  const state = !w.state ? (ready ? 'Not sure yet' : 'Not taught yet')
+    : `<b>${w.state === 'there' ? 'There' : 'Gone'}</b> since ${esc(fmtTime(w.since))}`;
+  el.innerHTML = `
+    <p><b>${esc(w.what)}:</b> ${state}${w.blocked ? ' <span class="muted">· can\'t see it right now</span>' : ''}</p>
+    ${w.now_picture ? `<img class="watch-now" src="/media/${w.now_picture}?t=${Date.now()}" alt="What it sees now">` : ''}
+    <p class="muted small">${w.checked ? `Looked ${esc(fmtTime(w.checked))}` : 'Not looked yet'}${w.last?.answer ? ` · thinks: ${esc(WATCH_WORD[w.last.answer])}` : ''}</p>
+    <div class="row wrap">${Object.entries(WATCH_WORD).map(([k, v]) => `<button type="button" data-teach="${k}">${v} now</button>`).join('')}</div>
+    <p class="muted small">Examples: ${c.there} there · ${c.gone} gone · ${c.blocked} can't see.
+      ${ready ? 'Add more whenever it gets one wrong (day, night, rain).' : 'Mark at least one "there" and one "gone" to start.'}</p>
+    <div class="watch-ex">${w.examples.map(x => `<figure title="${esc(WATCH_WORD[x.state])} · ${esc(fmtTime(x.ts))}">
+      <img src="/media/${esc(x.path)}" alt=""><figcaption>${esc(x.state)} <button type="button" data-forget="${x.id}" title="Remove this example">×</button></figcaption></figure>`).join('')}</div>`;
+  $$('[data-teach]', el).forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try { await api(`/api/watch/${zid}/teach`, { method: 'POST', body: { state: b.dataset.teach } }); }
+    catch (e) { alert(e.message); }
+    loadWatch();
+  });
+  $$('[data-forget]', el).forEach(b => b.onclick = async () => { await api(`/api/watch/examples/${b.dataset.forget}`, { method: 'DELETE' }); loadWatch(); });
 }
 function updateVals() {
   const f = $('#zn-form');
@@ -1176,7 +1221,7 @@ function updateVals() {
     s.textContent = s.dataset.for === 'min_area' ? (v * 100).toFixed(1) + '%' : v.toFixed(2);
   });
 }
-$('#zn-form').oninput = updateVals;
+$('#zn-form').oninput = e => { updateVals(); if (e.target.name === 'kind') zoneKindFields(); };
 
 const toNorm = e => { const r = zc.getBoundingClientRect(); return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]; };
 const nearPt = (pts, p, px = 10) => { const r = zc.getBoundingClientRect(); return pts.findIndex(([x, y]) => Math.hypot((x - p[0]) * r.width, (y - p[1]) * r.height) < px); };
@@ -1228,7 +1273,7 @@ $('#zn-form').onsubmit = async e => {
   const f = e.target;
   const z = { ...Z.sel, name: f.elements.name.value, kind: f.elements.kind.value, sensitivity: +f.elements.sensitivity.value,
     min_area: +f.elements.min_area.value, min_frames: +f.elements.min_frames.value, color: f.elements.color.value, enabled: f.elements.enabled.checked,
-    ai: f.elements.ai.checked };
+    ai: f.elements.ai.checked, watch_for: f.elements.watch_for.value.trim() || null };
   const r = z.id ? await api(`/api/zones/${z.id}`, { method: 'PUT', body: z }) : await api('/api/zones', { method: 'POST', body: z });
   Z.sel = { ...z, id: r.id }; await reloadZones(); selectZone(Z.zones.find(x => x.id === r.id));
 };
@@ -1940,6 +1985,8 @@ const PEOPLE = { list: [] };
 const PETS = { list: [] };
 let ANIMAL_KINDS = [];         // what "What animal?" in the player offers (animals.kinds in the config)
 api('/api/animals/kinds').then(r => { ANIMAL_KINDS = r.kinds; }).catch(() => {});
+let VEHICLE_TAGS = [];        // what "What vehicle?" in the player offers (services + delivery.vehicle_kinds)
+api('/api/vehicle-tags').then(r => { VEHICLE_TAGS = r.kinds; }).catch(() => {});
 function alertInline(el, msg) {           // a short note next to a control, instead of a blocking dialog
   const n = document.createElement('span'); n.className = 'small warn'; n.textContent = ' ' + msg;
   el.after(n); setTimeout(() => n.remove(), 6000);

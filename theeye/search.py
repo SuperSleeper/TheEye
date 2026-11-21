@@ -257,6 +257,10 @@ class Searcher:
         if self.animals and re.search(r"\b(wildlife|wild animals?|critters?|varmints?)\b", low):
             found += sorted(self.animals.other_kinds() - {"squirrel", "bird"})   # the night visitors, not pets/birds
             low = re.sub(r"\b(wildlife|wild animals?|critters?|varmints?)\b", " ", low)
+        for k in getattr(self, "vehicle_kinds", ()):      # your own vehicle tags (theeye.vehicletags): "short bus"
+            if re.search(rf"\b{re.escape(k.lower())}(e?s)?\b", low):
+                found.append(k.lower())
+                low = re.sub(rf"\b{re.escape(k.lower())}(e?s)?\b", " ", low)
         names = self.animals.names() if self.animals else set()
         for n in sorted(names, key=len, reverse=True):     # "german shepherd" before "shepherd"
             if re.search(rf"\b{re.escape(n)}(e?s)?\b", low):
@@ -269,7 +273,8 @@ class Searcher:
         found = list(dict.fromkeys(found))
         if not found:
             return
-        services = [s for s in found if s in SERVICE_KEYS]
+        own = {k.lower() for k in getattr(self, "vehicle_kinds", ())}
+        services = [s for s in found if s in SERVICE_KEYS or s in own]
         f["animals"] = found
         f["labels"] = [l for l in (f.get("labels") or []) if l not in ANIMAL_LABELS]
         if services:                       # "ups truck" / "amazon driver": the service tag is the filter
@@ -369,8 +374,12 @@ class Searcher:
         self._time_clauses(f, "first_ts", where, args)
         labels = [l for l in (f.get("labels") or []) if l]
         if labels:
-            where.append(f"COALESCE(kind, label) IN ({','.join('?' * len(labels))})")
-            args += labels
+            # A label that's also a vehicle tag family ("bus") also finds sightings tagged as one (Bus, Short Bus),
+            # even when the detector called that short bus a truck.
+            tags = [t for l in labels for t in getattr(self, "tag_family", {}).get(l.lower(), [])]
+            q = ",".join("?" * len(labels))
+            where.append(f"(COALESCE(kind, label) IN ({q})" + (f" OR subtype IN ({','.join('?' * len(tags))}))" if tags else ")"))
+            args += labels + tags
         who = [n.lower() for n in (f.get("people") or [])]
         if who:
             where.append(f"LOWER(who) IN ({','.join('?' * len(who))})")

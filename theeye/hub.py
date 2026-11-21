@@ -76,6 +76,8 @@ class Hub:
         self.cars = None                           # theeye.cars.Cars, set by __main__
         self.wildlife = None                       # theeye.wildlife.AnimalExamples, set by __main__
         self.exhaust = None                        # theeye.exhaust.ExhaustWatch, set by __main__ (same)
+        self.vtags = None                          # theeye.vehicletags.VehicleTags, set by __main__
+        self.watch = None                          # theeye.watch.ZoneWatch, set by __main__ (needs CLIP)
         self.plates = PlateRefiner(self)
         self.detector: Optional[Detector] = None
         if cfg.detector.enabled:
@@ -128,6 +130,8 @@ class Hub:
         threading.Thread(target=self._repair_interrupted, name="clip-repair", daemon=True).start()
         if self.exhaust:
             self.exhaust.start()
+        if self.watch:
+            self.watch.start()
 
     def stop(self) -> None:
         self._stop.set()
@@ -401,6 +405,14 @@ class Hub:
         animal's closer look, so it's stored, tagged and searched the same way."""
         if emb is None or not self._delivery_on(label):
             return None
+        if self.vtags and label in VEHICLE_LABELS:     # a vehicle you tagged, or one that looks just like it, wins
+            try:
+                m = self.vtags.match(np.frombuffer(emb, dtype=np.float32), bbox)
+            except Exception:  # noqa: BLE001
+                log.exception("vehicle tag matching failed")
+                m = None
+            if m:
+                return None if m[0] == "none" else (label, m[0], m[1])
         try:
             r = self.delivery.classify(label, np.frombuffer(emb, dtype=np.float32), bbox)
         except Exception:  # noqa: BLE001
@@ -414,24 +426,29 @@ class Hub:
         """Take a delivery/emergency tag off a detection (a family member, or a car marked Known), and off its
         recordings unless something else in them has that tag."""
         r = self.db.one("SELECT subtype FROM detections WHERE id=?", (det_id,))
-        if not r or r["subtype"] not in SERVICES:
+        if not r or r["subtype"] not in (set(SERVICES) | set(self.vtags.kinds() if self.vtags else [])):
             return
         tag = r["subtype"]
         self.db.execute("UPDATE detections SET subtype=NULL, subtype_conf=0 WHERE id=?", (det_id,))
+        tags = self.vtags.with_parents(tag) if self.vtags else [tag]          # Short Bus -> Short Bus, Bus
         for row in self.db.all("SELECT event_id FROM event_links WHERE kind='detection' AND ref_id=?", (det_id,)):
             eid = row["event_id"]
-            if self.db.one("SELECT 1 FROM event_links l JOIN detections d ON d.id=l.ref_id AND l.kind='detection'"
-                           " WHERE l.event_id=? AND d.subtype=? LIMIT 1", (eid, tag)):
+            others = {d["subtype"] for d in self.db.all(
+                "SELECT d.subtype FROM event_links l JOIN detections d ON d.id=l.ref_id AND l.kind='detection'"
+                " WHERE l.event_id=? AND d.subtype IS NOT NULL", (eid,))}
+            still = {a for o in others for a in (self.vtags.with_parents(o) if self.vtags else [o])}
+            gone = [t for t in tags if t not in still]          # keep Bus if another bus in it is still one
+            if not gone:
                 continue
             with self._lock:
                 ev = next((e for e in self._open_events.values() if e.id == eid), None)
                 if ev is not None:
-                    ev.labels.discard(tag)
+                    ev.labels.difference_update(gone)
                     self._flush_event_meta(ev)
                     continue
             e = self.db.one("SELECT labels FROM events WHERE id=?", (eid,))
             if e:
-                labels = [x for x in jload(e["labels"], []) if x != tag]
+                labels = [x for x in jload(e["labels"], []) if x not in gone]
                 self.db.execute("UPDATE events SET labels=? WHERE id=?", (json.dumps(labels), eid))
         log.info("detection %d: %s tag removed (family member or known vehicle)", det_id, tag)
 
@@ -464,6 +481,8 @@ class Hub:
         if not animal:
             return
         add = {n for n in (kind if kind != label else None, sub) if n}
+        if sub and self.vtags:
+            add |= set(self.vtags.with_parents(sub))       # a Short Bus recording is also a Bus recording
         for row in self.db.all("SELECT event_id FROM event_links WHERE kind='detection' AND ref_id=?", (det_id,)):
             eid = row["event_id"]
             drop = kind != label and not self.db.one(

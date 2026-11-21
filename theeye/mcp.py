@@ -622,6 +622,33 @@ class _Tools:
                 out.append(f"- an unrecognised {o['label']} on {cam_name} ({state})")
         return "\n".join(out)
 
+    def watched_spots(self, what: str = "") -> str:
+        w = getattr(self.hub, "watch", None)
+        if not w:
+            return "No watched spots: picture search (CLIP) is off."
+        spots = w.status()
+        if what:
+            key = _canon(what)
+            hit = [z for z in spots if key and (key in _canon(z["what"]) or key in _canon(z["name"])
+                                                or _canon(z["what"]) in key or _canon(z["name"]) in key)]
+            spots = hit or spots
+        if not spots:
+            return "No watched spots are set up (make one in Zones with the type 'Watch for something that stays')."
+        out = []
+        for z in spots:
+            cam = self._cam_name(z["camera_id"])
+            if z["state"] is None:
+                line = f"- {z['what']} ({cam}): not known yet"
+                if not (z["counts"]["there"] and z["counts"]["gone"]):
+                    line += " (it hasn't been taught what 'there' and 'gone' look like)"
+            else:
+                word = "there (out)" if z["state"] == "there" else "not there"
+                line = f"- {z['what']} ({cam}): {word} since {_ago(z['since'])}"
+            if z["blocked"]:
+                line += "; can't see the spot right now (something in front of it), so that's the last thing seen"
+            out.append(line)
+        return "\n".join(out)
+
     def known_vehicles(self, status: str = "all", limit: int = 15) -> str:
         status = status if status in ("new", "known", "flagged", "all") else "all"
         where, args = ("", []) if status == "all" else ("WHERE status = ?", [status])
@@ -711,6 +738,12 @@ TOOL_SCHEMAS = [
                     "home' (his car), 'what cars are parked nearby'. Always checks every camera. For vehicles on "
                     "one particular camera use look_at_camera.",
      "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "watched_spots",
+     "description": "Whether something that stays put is in its spot right now: 'are the trash cans out?', 'did "
+                    "the bins get put out', 'have the cans been brought in'. Says since when, and when the spot is "
+                    "hidden (a car parked in front). Give 'what' to pick one spot, e.g. 'trash cans'.",
+     "inputSchema": {"type": "object", "properties": {
+         "what": {"type": "string", "description": "Optional: which watched thing, e.g. 'trash cans'."}}}},
     {"name": "known_vehicles",
      "description": "List vehicles TheEye has learned, with plates and visit counts. status can be 'flagged' "
                     "(watch-listed), 'known', 'new', or 'all' (default).",

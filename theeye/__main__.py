@@ -48,6 +48,16 @@ def main() -> None:
     hub.wildlife = AnimalExamples(hub)
     from .exhaust import ExhaustWatch
     hub.exhaust = ExhaustWatch(hub, cfg_path.parent / "models")
+    from .vehicletags import VehicleTags
+    from .delivery import SERVICES
+    hub.vtags = VehicleTags(hub)
+    # "Bus" is also the detector's label: a plain "bus" search stays a label search (all buses).
+    searcher.tag_family = hub.vtags.family()
+    searcher.vehicle_kinds = sorted((k for k in hub.vtags.kinds() if k not in SERVICES and k.lower() not in
+                                     {"bus", "truck", "car", "motorcycle"}), key=len, reverse=True)
+    if hub.embedder:
+        from .watch import ZoneWatch
+        hub.watch = ZoneWatch(hub)
     app = create_app(hub, searcher, cfg_path)
     srv = cfg.server
     tls = {}

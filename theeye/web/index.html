@@ -146,17 +146,26 @@
               <option value="motion">Motion trigger zone</option>
               <option value="detect">Detection zone (objects only)</option>
               <option value="exclude">Exclusion (ignore)</option>
+              <option value="watch">Watch for something that stays (trash cans, a gate…)</option>
             </select>
           </label>
+          <div id="zn-watch" class="hidden">
+            <label>What it watches for <input name="watch_for" maxlength="60" placeholder="e.g. Trash cans"></label>
+            <p class="muted small" style="margin-top:-6px">Checked once a minute from a picture of this spot: it doesn't
+              use motion and doesn't limit object detection. Teach it below by marking what it sees.</p>
+            <div id="zn-watch-status"></div>
+          </div>
+          <div id="zn-motion-fields">
           <label>Sensitivity <span class="val" data-for="sensitivity"></span>
             <input type="range" name="sensitivity" min="0" max="1" step="0.05"></label>
           <label>Min changed area <span class="val" data-for="min_area"></span>
             <input type="range" name="min_area" min="0.001" max="0.5" step="0.001"></label>
           <label>Min frames <input type="number" name="min_frames" min="1" max="50"></label>
-          <label>Colour <input type="color" name="color"></label>
           <label class="row"><input type="checkbox" name="ai"> Only detect objects (AI) inside this zone</label>
           <p class="muted small" style="margin-top:-6px">An object counts when its base (where it meets the ground) is inside.
             With several such zones, inside any of them counts. Uncheck to let objects anywhere in the picture trigger rules.</p>
+          </div>
+          <label>Colour <input type="color" name="color"></label>
           <label class="row"><input type="checkbox" name="enabled"> Enabled</label>
           <div class="row">
             <button type="submit">Save</button>
